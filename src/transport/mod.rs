@@ -15,6 +15,26 @@ use log::debug;
 pub use some::SomeTransport;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
+/// A VirtIO device-side transport layer.
+pub trait DeviceTransport {
+    /// Gets the client VM ID
+    fn get_client_id(&self) -> u16;
+
+    /// Gets the max size of the given queue.
+    fn max_queue_size(&mut self, queue: u16) -> u32;
+
+    /// Returns whether the transport requires queues to use the legacy layout.
+    ///
+    /// Ref: 2.6.2 Legacy Interfaces: A Note on Virtqueue Layout
+    fn requires_legacy_layout(&self) -> bool;
+
+    /// Gets the physical addresses for descriptors, driver area and device area for a given queue.
+    fn queue_get(&mut self, queue: u16) -> [PhysAddr; 3];
+
+    /// Notifies the given queue on the device.
+    fn notify(&mut self, queue: u16);
+}
+
 /// A VirtIO transport layer.
 pub trait Transport {
     /// Gets the device type.

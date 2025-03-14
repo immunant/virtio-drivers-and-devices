@@ -4,12 +4,13 @@
 use super::error::SocketError;
 use super::protocol::{
     Feature, StreamShutdown, VirtioVsockConfig, VirtioVsockHdr, VirtioVsockOp, VsockAddr,
+    VMADDR_CID_HOST,
 };
 use super::DEFAULT_RX_BUFFER_SIZE;
 use crate::config::read_config;
-use crate::hal::Hal;
-use crate::queue::{owning::OwningQueue, VirtQueue};
-use crate::transport::Transport;
+use crate::hal::{DeviceHal, Hal};
+use crate::queue::{owning::OwningQueue, DeviceVirtQueue, VirtQueue};
+use crate::transport::{DeviceTransport, Transport};
 use crate::Result;
 use core::mem::size_of;
 use log::debug;
@@ -313,34 +314,180 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BU
 
     /// Accepts the given connection from a peer.
     pub fn accept(&mut self, connection_info: &ConnectionInfo) -> Result {
+        <Self as VirtIOSocketManager>::accept(self, connection_info)
+    }
+
+    /// Requests the peer to send us a credit update for the given connection.
+    pub fn request_credit(&mut self, connection_info: &ConnectionInfo) -> Result {
+        <Self as VirtIOSocketManager>::request_credit(self, connection_info)
+    }
+
+    /// Sends the buffer to the destination.
+    pub fn send(&mut self, buffer: &[u8], connection_info: &mut ConnectionInfo) -> Result {
+        <Self as VirtIOSocketManager>::send(self, buffer, connection_info)
+    }
+
+    /// Tells the peer how much buffer space we have to receive data.
+    pub fn credit_update(&mut self, connection_info: &ConnectionInfo) -> Result {
+        <Self as VirtIOSocketManager>::credit_update(self, connection_info)
+    }
+
+    /// Polls the RX virtqueue for the next event, and calls the given handler function to handle
+    /// it.
+    pub fn poll(
+        &mut self,
+        handler: impl FnOnce(VsockEvent, &[u8]) -> Result<Option<VsockEvent>>,
+    ) -> Result<Option<VsockEvent>> {
+        <Self as VirtIOSocketManager>::poll(self, handler)
+    }
+
+    /// Requests to shut down the connection cleanly, sending hints about whether we will send or
+    /// receive more data.
+    ///
+    /// This returns as soon as the request is sent; you should wait until `poll` returns a
+    /// `VsockEventType::Disconnected` event if you want to know that the peer has acknowledged the
+    /// shutdown.
+    pub fn shutdown_with_hints(
+        &mut self,
+        connection_info: &ConnectionInfo,
+        hints: StreamShutdown,
+    ) -> Result {
+        <Self as VirtIOSocketManager>::shutdown_with_hints(self, connection_info, hints)
+    }
+
+    /// Requests to shut down the connection cleanly, telling the peer that we won't send or receive
+    /// any more data.
+    ///
+    /// This returns as soon as the request is sent; you should wait until `poll` returns a
+    /// `VsockEventType::Disconnected` event if you want to know that the peer has acknowledged the
+    /// shutdown.
+    pub fn shutdown(&mut self, connection_info: &ConnectionInfo) -> Result {
+        <Self as VirtIOSocketManager>::shutdown(self, connection_info)
+    }
+
+    /// Forcibly closes the connection without waiting for the peer.
+    pub fn force_close(&mut self, connection_info: &ConnectionInfo) -> Result {
+        <Self as VirtIOSocketManager>::force_close(self, connection_info)
+    }
+
+    fn send_packet_to_tx_queue(&mut self, header: &VirtioVsockHdr, buffer: &[u8]) -> Result {
+        let _len = if buffer.is_empty() {
+            self.tx
+                .add_notify_wait_pop(&[header.as_bytes()], &mut [], &mut self.transport)?
+        } else {
+            self.tx.add_notify_wait_pop(
+                &[header.as_bytes(), buffer],
+                &mut [],
+                &mut self.transport,
+            )?
+        };
+        Ok(())
+    }
+}
+
+impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocketManager
+    for VirtIOSocket<H, T, RX_BUFFER_SIZE>
+{
+    fn local_cid(&self) -> u64 {
+        self.guest_cid()
+    }
+    fn send_packet_to_queue(&mut self, header: &VirtioVsockHdr, buffer: &[u8]) -> Result {
+        self.send_packet_to_tx_queue(header, buffer)
+    }
+    fn poll(
+        &mut self,
+        handler: impl FnOnce(VsockEvent, &[u8]) -> Result<Option<VsockEvent>>,
+    ) -> Result<Option<VsockEvent>> {
+        self.rx.poll(&mut self.transport, |buffer| {
+            let (header, body) = read_header_and_body(buffer)?;
+            VsockEvent::from_header(&header).and_then(|event| handler(event, body))
+        })
+    }
+}
+
+/// A low-level interface for a vsock device implementation
+pub struct VirtIOSocketDevice<H: DeviceHal, T: DeviceTransport> {
+    transport: T,
+    rx: DeviceVirtQueue<H, { QUEUE_SIZE }>,
+    tx: DeviceVirtQueue<H, { QUEUE_SIZE }>,
+    event: DeviceVirtQueue<H, { QUEUE_SIZE }>,
+}
+
+impl<H: DeviceHal, T: DeviceTransport> VirtIOSocketDevice<H, T> {
+    /// Create a new VirtIO Vsock device.
+    pub fn new(mut transport: T) -> Result<Self> {
+        let rx = DeviceVirtQueue::new(&mut transport, RX_QUEUE_IDX)?;
+        let tx = DeviceVirtQueue::new(&mut transport, TX_QUEUE_IDX)?;
+        let event = DeviceVirtQueue::new(&mut transport, EVENT_QUEUE_IDX)?;
+        Ok(Self {
+            transport,
+            rx,
+            tx,
+            event,
+        })
+    }
+}
+
+impl<H: DeviceHal, T: DeviceTransport> VirtIOSocketManager for VirtIOSocketDevice<H, T> {
+    fn local_cid(&self) -> u64 {
+        VMADDR_CID_HOST
+    }
+    fn send_packet_to_queue(&mut self, header: &VirtioVsockHdr, buffer: &[u8]) -> Result {
+        if buffer.is_empty() {
+            self.rx.wait_pop_add_notify(&[header.as_bytes()], &mut self.transport)?
+        } else {
+            self.rx.wait_pop_add_notify(&[header.as_bytes(), buffer], &mut self.transport)?
+        }
+        Ok(())
+    }
+    fn poll(
+        &mut self,
+        handler: impl FnOnce(VsockEvent, &[u8]) -> Result<Option<VsockEvent>>,
+    ) -> Result<Option<VsockEvent>> {
+        self.tx.poll(&mut self.transport, |buffer| {
+            let (header, body) = read_header_and_body(buffer)?;
+            VsockEvent::from_header(&header).and_then(|event| handler(event, body))
+        })
+    }
+}
+pub trait VirtIOSocketManager {
+    fn local_cid(&self) -> u64;
+    fn send_packet_to_queue(&mut self, header: &VirtioVsockHdr, buffer: &[u8]) -> Result;
+    fn poll(
+        &mut self,
+        handler: impl FnOnce(VsockEvent, &[u8]) -> Result<Option<VsockEvent>>,
+    ) -> Result<Option<VsockEvent>>;
+
+    /// Accepts the given connection from a peer.
+    fn accept(&mut self, connection_info: &ConnectionInfo) -> Result {
         let header = VirtioVsockHdr {
             op: VirtioVsockOp::Response.into(),
-            ..connection_info.new_header(self.guest_cid)
+            ..connection_info.new_header(self.local_cid())
         };
-        self.send_packet_to_tx_queue(&header, &[])
+        self.send_packet_to_queue(&header, &[])
     }
 
     /// Requests the peer to send us a credit update for the given connection.
     fn request_credit(&mut self, connection_info: &ConnectionInfo) -> Result {
         let header = VirtioVsockHdr {
             op: VirtioVsockOp::CreditRequest.into(),
-            ..connection_info.new_header(self.guest_cid)
+            ..connection_info.new_header(self.local_cid())
         };
-        self.send_packet_to_tx_queue(&header, &[])
+        self.send_packet_to_queue(&header, &[])
     }
 
     /// Sends the buffer to the destination.
-    pub fn send(&mut self, buffer: &[u8], connection_info: &mut ConnectionInfo) -> Result {
+    fn send(&mut self, buffer: &[u8], connection_info: &mut ConnectionInfo) -> Result {
         self.check_peer_buffer_is_sufficient(connection_info, buffer.len())?;
 
         let len = buffer.len() as u32;
         let header = VirtioVsockHdr {
             op: VirtioVsockOp::Rw.into(),
             len: len.into(),
-            ..connection_info.new_header(self.guest_cid)
+            ..connection_info.new_header(self.local_cid())
         };
         connection_info.tx_cnt += len;
-        self.send_packet_to_tx_queue(&header, buffer)
+        self.send_packet_to_queue(&header, buffer)
     }
 
     fn check_peer_buffer_is_sufficient(
@@ -362,24 +509,12 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BU
     }
 
     /// Tells the peer how much buffer space we have to receive data.
-    pub fn credit_update(&mut self, connection_info: &ConnectionInfo) -> Result {
+    fn credit_update(&mut self, connection_info: &ConnectionInfo) -> Result {
         let header = VirtioVsockHdr {
             op: VirtioVsockOp::CreditUpdate.into(),
-            ..connection_info.new_header(self.guest_cid)
+            ..connection_info.new_header(self.local_cid())
         };
-        self.send_packet_to_tx_queue(&header, &[])
-    }
-
-    /// Polls the RX virtqueue for the next event, and calls the given handler function to handle
-    /// it.
-    pub fn poll(
-        &mut self,
-        handler: impl FnOnce(VsockEvent, &[u8]) -> Result<Option<VsockEvent>>,
-    ) -> Result<Option<VsockEvent>> {
-        self.rx.poll(&mut self.transport, |buffer| {
-            let (header, body) = read_header_and_body(buffer)?;
-            VsockEvent::from_header(&header).and_then(|event| handler(event, body))
-        })
+        self.send_packet_to_queue(&header, &[])
     }
 
     /// Requests to shut down the connection cleanly, sending hints about whether we will send or
@@ -388,7 +523,7 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BU
     /// This returns as soon as the request is sent; you should wait until `poll` returns a
     /// `VsockEventType::Disconnected` event if you want to know that the peer has acknowledged the
     /// shutdown.
-    pub fn shutdown_with_hints(
+    fn shutdown_with_hints(
         &mut self,
         connection_info: &ConnectionInfo,
         hints: StreamShutdown,
@@ -396,9 +531,9 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BU
         let header = VirtioVsockHdr {
             op: VirtioVsockOp::Shutdown.into(),
             flags: hints.into(),
-            ..connection_info.new_header(self.guest_cid)
+            ..connection_info.new_header(self.local_cid())
         };
-        self.send_packet_to_tx_queue(&header, &[])
+        self.send_packet_to_queue(&header, &[])
     }
 
     /// Requests to shut down the connection cleanly, telling the peer that we won't send or receive
@@ -407,7 +542,7 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BU
     /// This returns as soon as the request is sent; you should wait until `poll` returns a
     /// `VsockEventType::Disconnected` event if you want to know that the peer has acknowledged the
     /// shutdown.
-    pub fn shutdown(&mut self, connection_info: &ConnectionInfo) -> Result {
+    fn shutdown(&mut self, connection_info: &ConnectionInfo) -> Result {
         self.shutdown_with_hints(
             connection_info,
             StreamShutdown::SEND | StreamShutdown::RECEIVE,
@@ -415,26 +550,12 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BU
     }
 
     /// Forcibly closes the connection without waiting for the peer.
-    pub fn force_close(&mut self, connection_info: &ConnectionInfo) -> Result {
+    fn force_close(&mut self, connection_info: &ConnectionInfo) -> Result {
         let header = VirtioVsockHdr {
             op: VirtioVsockOp::Rst.into(),
-            ..connection_info.new_header(self.guest_cid)
+            ..connection_info.new_header(self.local_cid())
         };
-        self.send_packet_to_tx_queue(&header, &[])?;
-        Ok(())
-    }
-
-    fn send_packet_to_tx_queue(&mut self, header: &VirtioVsockHdr, buffer: &[u8]) -> Result {
-        let _len = if buffer.is_empty() {
-            self.tx
-                .add_notify_wait_pop(&[header.as_bytes()], &mut [], &mut self.transport)?
-        } else {
-            self.tx.add_notify_wait_pop(
-                &[header.as_bytes(), buffer],
-                &mut [],
-                &mut self.transport,
-            )?
-        };
+        self.send_packet_to_queue(&header, &[])?;
         Ok(())
     }
 }

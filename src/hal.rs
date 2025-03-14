@@ -7,6 +7,12 @@ use core::{marker::PhantomData, ptr::NonNull};
 /// A physical address as used for virtio.
 pub type PhysAddr = usize;
 
+pub trait DmaMemory {
+    fn paddr(&self) -> usize;
+    fn vaddr(&self, offset: usize) -> NonNull<u8>;
+    fn raw_slice(&self) -> NonNull<[u8]>;
+}
+
 /// A region of contiguous physical memory used for DMA.
 #[derive(Debug)]
 pub struct Dma<H: Hal> {
@@ -40,20 +46,22 @@ impl<H: Hal> Dma<H> {
             _hal: PhantomData,
         })
     }
+}
 
+impl<H: Hal> DmaMemory for Dma<H> {
     /// Returns the physical address of the start of the DMA region, as seen by devices.
-    pub fn paddr(&self) -> usize {
+    fn paddr(&self) -> usize {
         self.paddr
     }
 
     /// Returns a pointer to the given offset within the DMA region.
-    pub fn vaddr(&self, offset: usize) -> NonNull<u8> {
+    fn vaddr(&self, offset: usize) -> NonNull<u8> {
         assert!(offset < self.pages * PAGE_SIZE);
         NonNull::new((self.vaddr.as_ptr() as usize + offset) as _).unwrap()
     }
 
     /// Returns a pointer to the entire DMA region as a slice.
-    pub fn raw_slice(&self) -> NonNull<[u8]> {
+    fn raw_slice(&self) -> NonNull<[u8]> {
         let raw_slice =
             core::ptr::slice_from_raw_parts_mut(self.vaddr(0).as_ptr(), self.pages * PAGE_SIZE);
         NonNull::new(raw_slice).unwrap()
@@ -66,6 +74,64 @@ impl<H: Hal> Drop for Dma<H> {
         // deallocated, and we are passing the values from then.
         let err = unsafe { H::dma_dealloc(self.paddr, self.vaddr, self.pages) };
         assert_eq!(err, 0, "failed to deallocate DMA");
+    }
+}
+
+#[derive(Debug)]
+pub struct DeviceDma<H: DeviceHal> {
+    paddr: usize,
+    vaddr: NonNull<u8>,
+    pages: usize,
+    _hal: PhantomData<H>,
+    client_id: u16,
+}
+
+unsafe impl<H: DeviceHal> Send for DeviceDma<H> {}
+
+unsafe impl<H: DeviceHal> Sync for DeviceDma<H> {}
+
+impl<H: DeviceHal> DeviceDma<H> {
+    pub unsafe fn new(
+        paddr: PhysAddr,
+        pages: usize,
+        direction: BufferDirection,
+        client_id: u16,
+    ) -> Result<Self> {
+        let vaddr = H::dma_map(paddr, pages, direction, client_id)?;
+        Ok(Self {
+            paddr,
+            vaddr,
+            pages,
+            _hal: PhantomData,
+            client_id,
+        })
+    }
+}
+
+impl<H: DeviceHal> DmaMemory for DeviceDma<H> {
+    /// Returns the physical address of the start of the DMA region, as seen by devices.
+    fn paddr(&self) -> usize {
+        self.paddr
+    }
+
+    /// Returns a pointer to the given offset within the DMA region.
+    fn vaddr(&self, offset: usize) -> NonNull<u8> {
+        assert!(offset < self.pages * PAGE_SIZE);
+        NonNull::new((self.vaddr.as_ptr() as usize + offset) as _).unwrap()
+    }
+
+    /// Returns a pointer to the entire DMA region as a slice.
+    fn raw_slice(&self) -> NonNull<[u8]> {
+        let raw_slice =
+            core::ptr::slice_from_raw_parts_mut(self.vaddr(0).as_ptr(), self.pages * PAGE_SIZE);
+        NonNull::new(raw_slice).unwrap()
+    }
+}
+
+impl<H: DeviceHal> Drop for DeviceDma<H> {
+    fn drop(&mut self) {
+        let err = unsafe { H::dma_unmap(self.paddr, self.vaddr, self.pages) };
+        assert_eq!(err, 0, "failed to unmap DMA");
     }
 }
 
@@ -138,6 +204,20 @@ pub unsafe trait Hal {
     /// any other thread for the duration of this method call. The `paddr` must be the value
     /// previously returned by the corresponding `share` call.
     unsafe fn unshare(paddr: PhysAddr, buffer: NonNull<[u8]>, direction: BufferDirection);
+}
+
+// TODO: document safety requirements
+/// Device-side abstraction layer for mapping and unmapping memory shared by the driver.
+pub trait DeviceHal {
+    /// Maps in memory shared by the driver.
+    unsafe fn dma_map(
+        paddr: PhysAddr,
+        pages: usize,
+        direction: BufferDirection,
+        client_id: u16,
+    ) -> Result<NonNull<u8>>;
+    /// Unmaps in memory previously shared by the driver.
+    unsafe fn dma_unmap(paddr: PhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32;
 }
 
 /// The direction in which a buffer is passed.
