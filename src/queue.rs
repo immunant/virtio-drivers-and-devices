@@ -561,7 +561,10 @@ pub struct MappedDescriptor<H: DeviceHal> {
 impl<H: DeviceHal> MappedDescriptor<H> {
     // SAFETY: The caller must ensure that the entire chain of buffers described by desc_copy came
     // from a device virtqueue descriptor.
-    unsafe fn map_buf(desc_copy: Descriptor, client_id: u16) -> Result<Self> {
+    unsafe fn map_buf<T: DeviceTransport>(
+        transport: &mut T,
+        desc_copy: Descriptor,
+    ) -> Result<Self> {
         let direction = if desc_copy.flags.contains(DescFlags::WRITE) {
             BufferDirection::DeviceToDriver
         } else {
@@ -571,10 +574,10 @@ impl<H: DeviceHal> MappedDescriptor<H> {
         // mapped in as DMA memory.
         let dma = unsafe {
             DeviceDma::new(
+                transport,
                 desc_copy.addr as PhysAddr,
                 pages(desc_copy.len as usize),
                 direction,
-                client_id,
             )?
         };
         Ok(Self { desc_copy, dma })
@@ -596,7 +599,6 @@ pub struct DeviceVirtQueue<H: DeviceHal, const SIZE: usize> {
     avail_idx: u16,
     last_used_idx: u16,
     desc_mapped: [Option<MappedDescriptor<H>>; SIZE],
-    client_id: u16,
 }
 
 impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
@@ -609,7 +611,6 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
         if transport.max_queue_size(idx) < SIZE as u32 {
             return Err(Error::InvalidParam);
         }
-        let client_id = transport.get_client_id();
 
         let size = SIZE as u16;
 
@@ -618,12 +619,12 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
         let layout = if transport.requires_legacy_layout() {
             // SAFETY: paddr was the physical address returned by the DeviceTransport implementor
             // for the start of the virtqueue (i.e. descriptor table)
-            unsafe { VirtQueueLayout::map_legacy(size, paddr, client_id)? }
+            unsafe { VirtQueueLayout::map_legacy(transport, size, paddr)? }
         } else {
             // SAFETY: paddr was the physical address returned by the DeviceTransport implementor
             // for the start of the virtqueue. used_paddr was the physical address returned for the
             // used vring.
-            unsafe { VirtQueueLayout::map_flexible(size, paddr, used_paddr, client_id)? }
+            unsafe { VirtQueueLayout::map_flexible(transport, size, paddr, used_paddr)? }
         };
         let desc =
             nonnull_slice_from_raw_parts(layout.descriptors_vaddr().cast::<Descriptor>(), SIZE);
@@ -639,7 +640,6 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
             avail_idx: 0,
             last_used_idx: 0,
             desc_mapped,
-            client_id,
         })
     }
 
@@ -655,7 +655,7 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
             }
             // SAFETY: inputs is copied into the first buffer then the they are returned to the used
             // vring and not accessed again.
-            let (mut buffers, token) = unsafe { self.pop_avail()?.unwrap() };
+            let (mut buffers, token) = unsafe { self.pop_avail(transport)?.unwrap() };
 
             let out_buf = &mut buffers[0];
             let mut copied = 0;
@@ -685,7 +685,7 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
         {
             // SAFETY: The buffers are copied to a single, temporary buffer. Then handler is called on
             // that and the original buffers are returned to the used vring and not accessed again.
-            let Some((buffers, token)) = (unsafe { self.pop_avail()? }) else {
+            let Some((buffers, token)) = (unsafe { self.pop_avail(transport)? }) else {
                 return Ok(None);
             };
 
@@ -743,7 +743,10 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
     /// The caller must ensure that the returned buffers are not accessed after the first buffer's
     /// token has been written to the used vring and the `last_used` index has been updated.
     #[cfg(feature = "alloc")]
-    unsafe fn pop_avail<'a>(&mut self) -> Result<Option<(Vec<&'a mut [u8]>, u16)>> {
+    unsafe fn pop_avail<'a, T: DeviceTransport>(
+        &mut self,
+        transport: &mut T,
+    ) -> Result<Option<(Vec<&'a mut [u8]>, u16)>> {
         let Some(head) = self.peek_avail() else {
             return Ok(None);
         };
@@ -772,7 +775,7 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
                 // peek_avail and using that to index into the descriptor table or through a chain
                 // of buffers starting from the buffer obtained via peek_avail.
                 // Drop impl unmaps the old descriptor's buffer to avoid leaking that memory
-                *mapped_desc = Some(unsafe { MappedDescriptor::map_buf(desc, self.client_id)? });
+                *mapped_desc = Some(unsafe { MappedDescriptor::map_buf(transport, desc)? });
             }
             let mut buffer = mapped_desc.as_ref().unwrap().dma.raw_slice();
             // SAFETY: Safety delegated to safety requirements on this function.
@@ -872,13 +875,17 @@ impl<H: Hal> VirtQueueLayout<Dma<H>> {
 impl<H: DeviceHal> VirtQueueLayout<DeviceDma<H>> {
     // SAFETY: paddr must be memory shared by a virtio driver for a split virtqueue with the legacy
     // layout and queue_size entries.
-    unsafe fn map_legacy(queue_size: u16, paddr: PhysAddr, client_id: u16) -> Result<Self> {
+    unsafe fn map_legacy<T: DeviceTransport>(
+        transport: &mut T,
+        queue_size: u16,
+        paddr: PhysAddr,
+    ) -> Result<Self> {
         let (desc, avail, used) = queue_part_sizes(queue_size);
         let size = align_up(desc + avail) + align_up(used);
         // SAFETY: The safety requirements on this function ensure that this memory region can be
         // mapped in as DMA memory.
         let dma =
-            unsafe { DeviceDma::new(paddr, size / PAGE_SIZE, BufferDirection::Both, client_id)? };
+            unsafe { DeviceDma::new(transport, paddr, size / PAGE_SIZE, BufferDirection::Both)? };
         Ok(Self::Legacy {
             dma,
             avail_offset: desc,
@@ -890,31 +897,31 @@ impl<H: DeviceHal> VirtQueueLayout<DeviceDma<H>> {
     // virtqueue where the device writeable and driver writeable portions are described by separate
     // memory regions. Specifically desc_avail_paddr must point to the descriptor table and
     // available vring and used_paddr must point to the used vring.
-    unsafe fn map_flexible(
+    unsafe fn map_flexible<T: DeviceTransport>(
+        transport: &mut T,
         queue_size: u16,
         desc_avail_paddr: PhysAddr,
         used_paddr: PhysAddr,
-        client_id: u16,
     ) -> Result<Self> {
         let (desc, avail, used) = queue_part_sizes(queue_size);
         // SAFETY: The safety requirements on this function ensure that this memory region can be
         // mapped in as DMA memory.
         let driver_to_device_dma = unsafe {
             DeviceDma::new(
+                transport,
                 desc_avail_paddr,
                 pages(desc + avail),
                 BufferDirection::DriverToDevice,
-                client_id,
             )?
         };
         // SAFETY: The safety requirements on this function ensure that this memory region can be
         // mapped in as DMA memory.
         let device_to_driver_dma = unsafe {
             DeviceDma::new(
+                transport,
                 used_paddr,
                 pages(used),
                 BufferDirection::DeviceToDriver,
-                client_id,
             )?
         };
         Ok(Self::Modern {

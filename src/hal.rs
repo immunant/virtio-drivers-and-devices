@@ -1,6 +1,7 @@
 #[cfg(test)]
 pub mod fake;
 
+use crate::transport::DeviceTransport;
 use crate::{Error, Result, PAGE_SIZE};
 use core::{marker::PhantomData, ptr::NonNull};
 
@@ -83,7 +84,6 @@ pub struct DeviceDma<H: DeviceHal> {
     vaddr: NonNull<u8>,
     pages: usize,
     _hal: PhantomData<H>,
-    client_id: u16,
 }
 
 // SAFETY: Device DMA memory can be accessed from any thread.
@@ -96,19 +96,18 @@ unsafe impl<H: DeviceHal> Sync for DeviceDma<H> {}
 impl<H: DeviceHal> DeviceDma<H> {
     // SAFETY: The caller must ensure that the memory described by paddr and pages can be mapped by
     // the type implementing DeviceHal such as a virtqueue or a buffer described by a descriptor.
-    pub unsafe fn new(
+    pub unsafe fn new<T: DeviceTransport>(
+        transport: &mut T,
         paddr: PhysAddr,
         pages: usize,
         direction: BufferDirection,
-        client_id: u16,
     ) -> Result<Self> {
-        let vaddr = H::dma_map(paddr, pages, direction, client_id)?;
+        let vaddr = H::dma_map(paddr, pages, direction, transport)?;
         Ok(Self {
             paddr,
             vaddr,
             pages,
             _hal: PhantomData,
-            client_id,
         })
     }
 }
@@ -229,11 +228,11 @@ pub trait DeviceHal {
     /// [_valid_](https://doc.rust-lang.org/std/ptr/index.html#safety) pointer, aligned to
     /// [`PAGE_SIZE`], and won't alias any other allocations or references in the program until it
     /// is freed by `dma_unmap`.
-    unsafe fn dma_map(
+    unsafe fn dma_map<T: DeviceTransport>(
         paddr: PhysAddr,
         pages: usize,
         direction: BufferDirection,
-        client_id: u16,
+        transport: &mut T,
     ) -> Result<NonNull<u8>>;
 
     /// Unmaps memory previously shared by the driver.
