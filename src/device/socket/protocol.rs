@@ -32,7 +32,7 @@ impl From<SocketType> for U16<LittleEndian> {
 }
 
 /// VirtioVsockConfig is the vsock device configuration space.
-#[derive(FromBytes, Immutable, IntoBytes)]
+#[derive(FromBytes, Immutable, IntoBytes, Clone)]
 #[repr(C)]
 pub struct VirtioVsockConfig {
     /// The guest_cid field contains the guest’s context ID, which uniquely identifies

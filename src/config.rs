@@ -4,7 +4,7 @@ use crate::{transport::Transport, Error};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 /// A configuration space register from which the driver can only read.
-#[derive(Default, FromBytes, Immutable, IntoBytes)]
+#[derive(Default, Clone, FromBytes, Immutable, IntoBytes)]
 #[repr(transparent)]
 pub struct ReadOnly<T: Copy + FromBytes>(pub T);
 

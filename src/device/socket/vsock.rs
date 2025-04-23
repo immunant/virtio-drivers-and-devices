@@ -619,4 +619,43 @@ mod tests {
             VirtIOSocket::<FakeHal, FakeTransport<VirtioVsockConfig>>::new(transport).unwrap();
         assert_eq!(socket.guest_cid(), 0x00_0000_0042);
     }
+
+    #[test]
+    fn connect() {
+        let config_space = VirtioVsockConfig {
+            guest_cid_low: ReadOnly::new(0x10),
+            guest_cid_high: ReadOnly::new(0),
+        };
+        let state = Arc::new(Mutex::new(State::new(
+            vec![
+                QueueStatus::default(),
+                QueueStatus::default(),
+                QueueStatus::default(),
+            ],
+            config_space,
+        )));
+        let transport = FakeTransport {
+            device_type: DeviceType::Socket,
+            max_queue_size: 32,
+            device_features: 0,
+            state: state.clone(),
+        };
+        let mut driver =
+            VirtIOSocket::<FakeHal, FakeTransport<VirtioVsockConfig>>::new(transport.clone()).unwrap();
+        let mut device =
+            VirtIOSocketDevice::<FakeHal, FakeTransport<VirtioVsockConfig>>::new(transport).unwrap();
+        println!("{:?}", driver.local_cid());
+        println!("{:?}", device.local_cid());
+        let src = 0;
+        let dst = 0;
+        let addr = VsockAddr { cid: VMADDR_CID_HOST, port: dst };
+        let _handle = std::thread::spawn(move || {
+            device.poll(|event, body| {
+                println!("{:#x?}", event);
+                println!("{:#x?}", body);
+                Ok(Some(event))
+            }).unwrap();
+        });
+        driver.connect(&ConnectionInfo::new(addr, src)).unwrap();
+    }
 }
