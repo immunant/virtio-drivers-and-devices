@@ -769,13 +769,10 @@ mod tests {
                 self.status_command
             } else if register_offset >= BAR0_OFFSET && register_offset < 0x28 {
                 let bar_index = usize::from((register_offset - BAR0_OFFSET) / 4);
-                println!(
-                    "Reading {} from bar {}",
-                    self.bar_values[bar_index], bar_index
-                );
                 self.bar_values[bar_index]
             } else {
-                return 0xffffffff;
+                println!("Reading unsupported register offset {}", register_offset);
+                0xffffffff
             }
         }
 
@@ -786,7 +783,6 @@ mod tests {
                 self.status_command = data;
             } else if register_offset >= BAR0_OFFSET && register_offset < 0x28 {
                 let bar_index = usize::from((register_offset - BAR0_OFFSET) / 4);
-                println!("Writing {:#010x} to bar {}", data, bar_index);
                 let bar_mask = self.bar_masks[bar_index];
                 self.bar_values[bar_index] =
                     (bar_mask & self.bar_values[bar_index]) | (!bar_mask & data);
