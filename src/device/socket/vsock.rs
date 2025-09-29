@@ -219,7 +219,7 @@ pub enum VsockEventType {
 /// bigger than `size_of::<VirtioVsockHdr>()`.
 pub struct VirtIOSocket<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize = DEFAULT_RX_BUFFER_SIZE>
 {
-    transport: T,
+    pub(super) transport: T,
     /// Virtqueue to receive packets.
     rx: OwningQueue<H, QUEUE_SIZE, RX_BUFFER_SIZE>,
     tx: VirtQueue<H, { QUEUE_SIZE }>,

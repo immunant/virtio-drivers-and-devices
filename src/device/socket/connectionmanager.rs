@@ -10,6 +10,7 @@ use alloc::{boxed::Box, vec::Vec};
 use core::cmp::min;
 use core::convert::TryInto;
 use core::hint::spin_loop;
+use core::pin::Pin;
 use log::debug;
 use zerocopy::FromZeros;
 
@@ -228,6 +229,12 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize>
     /// Forcibly closes the connection without waiting for the peer.
     pub fn force_close(&mut self, destination: VsockAddr, src_port: u32) -> Result {
         self.0.force_close(destination, src_port)
+    }
+
+    /// Get a pointer to the Transport
+    pub fn get_transport(self: Pin<&Self>) -> *mut T {
+        let ptr = &self.0.driver.transport as *const T;
+        ptr.cast_mut()
     }
 }
 
@@ -1042,5 +1049,55 @@ mod tests {
         );
 
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn get_boxed_transport() {
+        // Creates a new low-level socket interface
+        fn new_socket() -> VirtIOSocket<FakeHal, FakeTransport<VirtioVsockConfig>> {
+            let config_space = VirtioVsockConfig {
+                guest_cid_low: ReadOnly::new(66),
+                guest_cid_high: ReadOnly::new(0),
+            };
+            let state = Arc::new(Mutex::new(State::new(
+                vec![
+                    QueueStatus::default(),
+                    QueueStatus::default(),
+                    QueueStatus::default(),
+                ],
+                config_space,
+            )));
+            let transport = FakeTransport {
+                device_type: DeviceType::Socket,
+                max_queue_size: 32,
+                device_features: 0,
+                state: state.clone(),
+            };
+            VirtIOSocket::<FakeHal, FakeTransport<VirtioVsockConfig>>::new(transport).unwrap()
+        }
+
+        // Create a socket. This does not have a stable address so making a new let binding or
+        // passing it between functions may change its address and the FakeTransport embedded in it.
+        let socket = VsockConnectionManager::new(new_socket());
+        // To allow calling `get_transport` we need to pin it which is mostly easily done by boxing
+        // the socket or putting it into an Arc. Pin<T> impls Deref so it may be transparently used
+        // like a `T`, but it is necessary so the get_transport API can ensure that the socket
+        // argument and the transport pointer it returns have a stable addresses.
+
+        // Either Box::pin or Box::into_pin can be used to a Pin<Box<T>>
+        let boxed_socket: Pin<Box<_>> = Box::pin(socket);
+        let boxed_transport_ptr: *mut FakeTransport<_> = VsockConnectionManager::get_transport(boxed_socket.as_ref());
+
+        // Make sure the pointer matches what we expect
+        let transport_addr = &raw const boxed_socket.0.driver.transport;
+        assert_eq!(boxed_transport_ptr, transport_addr.cast_mut());
+
+        let socket2 = VsockConnectionManager::new(new_socket());
+        let arc_socket: Pin<Arc<_>> = Arc::pin(socket2);
+        let arc_transport_ptr: *mut FakeTransport<_> = VsockConnectionManager::get_transport(arc_socket.as_ref());
+
+        // Make sure the pointer matches what we expect
+        let transport_addr = &raw const arc_socket.0.driver.transport;
+        assert_eq!(arc_transport_ptr, transport_addr.cast_mut());
     }
 }
