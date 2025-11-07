@@ -3,7 +3,7 @@ use super::{
     VirtIOSocketDevice, VirtIOSocketManager, VsockEvent, VsockEventType, DEFAULT_RX_BUFFER_SIZE,
 };
 use crate::{
-    transport::{DeviceTransport, Transport},
+    transport::{DeviceTransport, InterruptStatus, Transport},
     DeviceHal, Hal, Result,
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -95,6 +95,17 @@ pub trait VsockManager {
 
     /// Reads data received from the given connection.
     fn recv(&mut self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize>;
+
+    /// Acknowledges an interrupt using a pointer to the VsockManager impl
+    ///
+    /// This is useful when you cannot soundly get a mutable reference to the VsockManager impl. It
+    /// may only be called on the driver side as it will panic if called on the device side.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to an initialized VsockManager impl which is ready to acknowledge
+    /// interrupts.
+    unsafe fn ack_interrupt(ptr: *mut Self) -> InterruptStatus;
 }
 
 struct VsockConnectionManagerCommon<M: VirtIOSocketManager> {
@@ -337,6 +348,13 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VsockManager
     fn recv(&mut self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
         Self::recv(self, peer, src_port, buffer)
     }
+    unsafe fn ack_interrupt(ptr: *mut Self) -> InterruptStatus {
+        // SAFETY: This function's safety requirements ensure that `ptr` points to a valid
+        // VsockConnectionManager so this gives a valid pointer to the field.
+        let vsock_driver_ptr = unsafe { &raw mut (*ptr).0.driver };
+        // SAFETY: delegated to the caller
+        unsafe { VirtIOSocket::<H, T, RX_BUFFER_SIZE>::ack_interrupt(vsock_driver_ptr) }
+    }
 }
 
 impl<H: DeviceHal, T: DeviceTransport> VsockManager for VsockDeviceConnectionManager<H, T> {
@@ -363,6 +381,9 @@ impl<H: DeviceHal, T: DeviceTransport> VsockManager for VsockDeviceConnectionMan
     }
     fn recv(&mut self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
         Self::recv(self, peer, src_port, buffer)
+    }
+    unsafe fn ack_interrupt(_ptr: *mut Self) -> InterruptStatus {
+        panic!("vsock devices cannot acknowledge interrupts")
     }
 }
 
