@@ -87,6 +87,18 @@ pub trait Transport {
     /// Returns true on success.
     fn ack_interrupt(&mut self) -> InterruptStatus;
 
+    // TODO: Implement this method soundly for the existing Transport impls in this crate
+    /// Acknowledges an interrupt using a raw pointer.
+    ///
+    /// This is useful when you cannot soundly get a mutable reference to the Transport impl.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to an initialized Transport impl which is ready to acknowledge interrupts.
+    unsafe fn ack_interrupt_raw(_ptr: *mut Self) -> InterruptStatus {
+        todo!("sound ack_interrupt_raw implementations are transport-specific")
+    }
+
     /// Begins initializing the device.
     ///
     /// Ref: virtio 3.1.1 Device Initialization
