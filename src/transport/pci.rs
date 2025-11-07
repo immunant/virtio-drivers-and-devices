@@ -204,28 +204,6 @@ impl PciTransport {
             config_space,
         })
     }
-
-    /// Acknowledges an interrupt using a pointer to the PciTransport
-    ///
-    /// This function is an alternative to `Transport::ack_interrupt` which does not require a
-    /// mutable reference to the `PciTransport`.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must point to a non-null, properly initialized `PciTransport` instance. Also the
-    /// caller must ensure that any other references or pointers to the `PciTransport` are not used
-    /// to call either this function or `ack_interrupt` concurrently.
-    pub unsafe fn ack_interrupt_raw(ptr: *mut Self) -> InterruptStatus {
-        // SAFETY: The isr_status field should not change once it has been initialized so reading
-        // this field is fine.
-        let isr_status_ptr = unsafe { (*ptr).isr_status };
-
-        // SAFETY: The common config pointer is valid and we checked in `get_bar_region` that it
-        // was aligned.
-        // Reading the ISR status resets it to 0 and causes the device to de-assert the interrupt.
-        let isr_status = unsafe { isr_status_ptr.as_ptr().vread() };
-        InterruptStatus::from_bits_retain(isr_status.into())
-    }
 }
 
 impl Transport for PciTransport {
@@ -347,6 +325,28 @@ impl Transport for PciTransport {
         // callers to avoid calling that function concurrently with ack_interrupt with the same
         // PciTransport instance.
         unsafe { Self::ack_interrupt_raw(self as *mut Self) }
+    }
+
+    /// Acknowledges an interrupt using a pointer to the PciTransport
+    ///
+    /// This function is an alternative to `Transport::ack_interrupt` which does not require a
+    /// mutable reference to the `PciTransport`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a non-null, properly initialized `PciTransport` instance. Also the
+    /// caller must ensure that any other references or pointers to the `PciTransport` are not used
+    /// to call either this function or `ack_interrupt` concurrently.
+    unsafe fn ack_interrupt_raw(ptr: *mut Self) -> InterruptStatus {
+        // SAFETY: The isr_status field should not change once it has been initialized so reading
+        // this field is fine.
+        let isr_status_ptr = unsafe { (*ptr).isr_status };
+
+        // SAFETY: The common config pointer is valid and we checked in `get_bar_region` that it
+        // was aligned.
+        // Reading the ISR status resets it to 0 and causes the device to de-assert the interrupt.
+        let isr_status = unsafe { isr_status_ptr.as_ptr().vread() };
+        InterruptStatus::from_bits_retain(isr_status.into())
     }
 
     fn read_config_generation(&self) -> u32 {
