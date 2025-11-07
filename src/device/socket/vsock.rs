@@ -10,7 +10,7 @@ use super::DEFAULT_RX_BUFFER_SIZE;
 use crate::config::read_config;
 use crate::hal::{DeviceHal, Hal};
 use crate::queue::{owning::OwningQueue, DeviceVirtQueue, VirtQueue};
-use crate::transport::{DeviceTransport, Transport};
+use crate::transport::{DeviceTransport, InterruptStatus, Transport};
 use crate::Result;
 use core::mem::size_of;
 use log::debug;
@@ -382,6 +382,21 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BU
             )?
         };
         Ok(())
+    }
+
+    /// Acknowledges an interrupt using a pointer to the VirtIOSocket.
+    ///
+    /// This is useful when you cannot soundly get a mutable reference to the VirtIOSocket.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to an initialized VirtIOSocket which is ready to acknowledge interrupts.
+    pub unsafe fn ack_interrupt(ptr: *mut Self) -> InterruptStatus {
+        // SAFETY: This function's safety requirements ensure that `ptr` points to a valid
+        // VirtIOSocket so this gives a valid pointer to the field.
+        let transport_ptr = unsafe { &raw mut (*ptr).transport };
+        // SAFETY: delegated to the caller
+        unsafe { T::ack_interrupt_raw(transport_ptr) }
     }
 }
 
