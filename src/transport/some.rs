@@ -152,6 +152,25 @@ impl Transport for SomeTransport {
         }
     }
 
+    /// Acknowledges an interrupt using a raw pointer
+    ///
+    /// This function is an alternative to `Transport::ack_interrupt` which does not require a
+    /// mutable reference to the `SomeTransport`.
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must point to a non-null, properly initialized `SomeTransport` instance. Also
+    /// -  the caller must ensure that any other references or pointers to the `SomeTransport`
+    ///    are not used to call either this function or `ack_interrupt` concurrently.
+    unsafe fn ack_interrupt_raw(ptr: *mut Self) -> InterruptStatus {
+        match *ptr {
+            Self::Mmio(ref mut mmio) => mmio.ack_interrupt(),
+            Self::Pci(ref mut pci) => pci.ack_interrupt(),
+            #[cfg(target_arch = "x86_64")]
+            Self::HypPci(ref mut pci) => pci.ack_interrupt(),
+        }
+    }
+
     fn read_config_generation(&self) -> u32 {
         match self {
             Self::Mmio(mmio) => mmio.read_config_generation(),
