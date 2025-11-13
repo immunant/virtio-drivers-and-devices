@@ -778,9 +778,9 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
 
     fn read_desc(&mut self, index: u16) -> Result<Descriptor> {
         let index = usize::from(index);
-        // SAFETY: self.desc is a properly aligned, dereferencable and initialised instance of
-        // Descriptor
-        let desc = unsafe { (*self.desc.as_ptr()).get(index) };
+        // SAFETY: `self.desc.as_ptr()` is a properly aligned, dereferencable, and initialised
+        // instance of `*mut [Descriptor]` which obeys Rust's aliasing rules.
+        let desc = unsafe { (&*self.desc.as_ptr()).get(index) };
         desc.ok_or(Error::WrongToken).cloned()
     }
 
