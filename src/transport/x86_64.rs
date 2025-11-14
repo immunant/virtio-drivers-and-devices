@@ -60,7 +60,8 @@ impl HypPciTransport {
         if vendor_id != VIRTIO_VENDOR_ID {
             return Err(VirtioPciError::InvalidVendorId(vendor_id));
         }
-        let device_type = device_type(device_id);
+        let device_type =
+            device_type(device_id).ok_or(VirtioPciError::InvalidDeviceId(device_id))?;
 
         // Find the PCI capabilities we need.
         let mut common_cfg = None;
@@ -163,7 +164,7 @@ impl Transport for HypPciTransport {
         let device_features_low: u32 = configread!(self.common_cfg, device_feature);
         configwrite!(self.common_cfg, device_feature_select, 1u32);
         let device_features_high: u32 = configread!(self.common_cfg, device_feature);
-        (device_features_high as u64) << 32 | device_features_low as u64
+        ((device_features_high as u64) << 32) | (device_features_low as u64)
     }
 
     fn write_driver_features(&mut self, driver_features: u64) {
@@ -292,7 +293,7 @@ fn get_bar_region<T, C: ConfigurationAccess>(
     if bar_address == 0 {
         return Err(VirtioPciError::BarNotAllocated(struct_info.bar));
     }
-    if struct_info.offset + struct_info.length > bar_size
+    if u64::from(struct_info.offset + struct_info.length) > bar_size
         || size_of::<T>() > struct_info.length as usize
     {
         return Err(VirtioPciError::BarOffsetOutOfRange);
