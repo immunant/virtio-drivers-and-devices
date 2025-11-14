@@ -18,7 +18,7 @@ mod tcp;
 
 use self::hal::HalImpl;
 use virtio_drivers_and_devices::{
-    device::{blk::VirtIOBlk, gpu::VirtIOGpu, rng::VirtioIORng},
+    device::{blk::VirtIOBlk, gpu::VirtIOGpu, rng::VirtIORng},
     transport::{
         pci::{
             bus::{BarInfo, Cam, Command, ConfigurationAccess, DeviceFunction, MmioCam, PciRoot},
