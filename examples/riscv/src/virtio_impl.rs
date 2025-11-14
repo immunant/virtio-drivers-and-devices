@@ -11,7 +11,7 @@ extern "C" {
 }
 
 lazy_static! {
-    static ref DMA_PADDR: AtomicUsize = AtomicUsize::new(end as usize);
+    static ref DMA_PADDR: AtomicUsize = AtomicUsize::new(end as *const () as usize);
 }
 
 pub struct HalImpl;
