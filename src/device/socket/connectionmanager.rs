@@ -164,7 +164,7 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize>
 
     /// Returns the CID which has been assigned to this guest.
     pub fn guest_cid(&self) -> u64 {
-        self.0.driver.guest_cid()
+        self.0.local_cid()
     }
 
     /// Sends a request to connect to the given destination.
@@ -209,7 +209,7 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize>
 
     /// Returns the local CID, i.e. the CID of the guest.
     pub fn local_cid(&self) -> u64 {
-        self.0.driver.local_cid()
+        self.0.local_cid()
     }
 
     /// Reads data received from the given connection.
