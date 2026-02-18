@@ -207,11 +207,6 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize>
         self.0.poll()
     }
 
-    /// Returns the local CID, i.e. the CID of the guest.
-    pub fn local_cid(&self) -> u64 {
-        self.0.local_cid()
-    }
-
     /// Reads data received from the given connection.
     pub fn recv(&mut self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
         self.0.recv(peer, src_port, buffer)
@@ -291,11 +286,6 @@ impl<H: DeviceHal, T: DeviceTransport> VsockDeviceConnectionManager<H, T> {
         self.0.poll()
     }
 
-    /// Returns the local CID, i.e. the CID of the host.
-    pub fn local_cid(&self) -> u64 {
-        self.0.local_cid()
-    }
-
     /// Reads data received from the given connection.
     pub fn recv(&mut self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
         self.0.recv(peer, src_port, buffer)
@@ -357,7 +347,7 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VsockManager
         Self::poll(self)
     }
     fn local_cid(&self) -> u64 {
-        Self::local_cid(self)
+        self.0.local_cid()
     }
     fn shutdown(&mut self, dest: VsockAddr, src_port: u32) -> Result {
         Self::shutdown(self, dest, src_port)
@@ -394,7 +384,7 @@ impl<H: DeviceHal, T: DeviceTransport> VsockManager for VsockDeviceConnectionMan
         Self::poll(self)
     }
     fn local_cid(&self) -> u64 {
-        Self::local_cid(self)
+        self.0.local_cid()
     }
     fn shutdown(&mut self, dest: VsockAddr, src_port: u32) -> Result {
         Self::shutdown(self, dest, src_port)
