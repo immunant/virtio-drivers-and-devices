@@ -85,6 +85,10 @@ pub trait VsockManager {
     /// Polls the vsock device to receive data or other updates.
     fn poll(&mut self) -> Result<Option<VsockEvent>>;
 
+    /// Returns the local CID, i.e. the CID of the guest on the driver side and the CID of the host
+    /// on the device side.
+    fn local_cid(&self) -> u64;
+
     /// Requests to shut down the connection cleanly, telling the peer that we won't send or receive
     /// any more data.
     ///
@@ -203,6 +207,11 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize>
         self.0.poll()
     }
 
+    /// Returns the local CID, i.e. the CID of the guest.
+    pub fn local_cid(&self) -> u64 {
+        self.0.driver.local_cid()
+    }
+
     /// Reads data received from the given connection.
     pub fn recv(&mut self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
         self.0.recv(peer, src_port, buffer)
@@ -282,6 +291,11 @@ impl<H: DeviceHal, T: DeviceTransport> VsockDeviceConnectionManager<H, T> {
         self.0.poll()
     }
 
+    /// Returns the local CID, i.e. the CID of the host.
+    pub fn local_cid(&self) -> u64 {
+        self.0.local_cid()
+    }
+
     /// Reads data received from the given connection.
     pub fn recv(&mut self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
         self.0.recv(peer, src_port, buffer)
@@ -342,6 +356,9 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VsockManager
     fn poll(&mut self) -> Result<Option<VsockEvent>> {
         Self::poll(self)
     }
+    fn local_cid(&self) -> u64 {
+        Self::local_cid(self)
+    }
     fn shutdown(&mut self, dest: VsockAddr, src_port: u32) -> Result {
         Self::shutdown(self, dest, src_port)
     }
@@ -375,6 +392,9 @@ impl<H: DeviceHal, T: DeviceTransport> VsockManager for VsockDeviceConnectionMan
     }
     fn poll(&mut self) -> Result<Option<VsockEvent>> {
         Self::poll(self)
+    }
+    fn local_cid(&self) -> u64 {
+        Self::local_cid(self)
     }
     fn shutdown(&mut self, dest: VsockAddr, src_port: u32) -> Result {
         Self::shutdown(self, dest, src_port)
@@ -496,6 +516,11 @@ impl<M: VirtIOSocketManager> VsockConnectionManagerCommon<M> {
         }
 
         Ok(Some(event))
+    }
+
+    /// Returns the local CID of the vsock device.
+    pub fn local_cid(&self) -> u64 {
+        self.driver.local_cid()
     }
 
     /// Reads data received from the given connection.
