@@ -29,7 +29,7 @@ pub struct VirtIONetRaw<H: Hal, T: Transport, const QUEUE_SIZE: usize> {
 impl<H: Hal, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, T, QUEUE_SIZE> {
     /// Create a new VirtIO-Net driver.
     pub fn new(mut transport: T) -> Result<Self> {
-        let negotiated_features = transport.begin_init(SUPPORTED_FEATURES);
+        let negotiated_features = transport.begin_init(SUPPORTED_FEATURES)?;
         info!("negotiated_features {:?}", negotiated_features);
 
         // Read configuration space.

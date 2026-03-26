@@ -22,7 +22,7 @@ pub struct VirtIORng<H: Hal, T: Transport> {
 impl<H: Hal, T: Transport> VirtIORng<H, T> {
     /// Create a new driver with the given transport.
     pub fn new(mut transport: T) -> Result<Self> {
-        let feat = transport.begin_init(SUPPORTED_FEATURES);
+        let feat = transport.begin_init(SUPPORTED_FEATURES)?;
         let queue = VirtQueue::new(
             &mut transport,
             QUEUE_IDX,

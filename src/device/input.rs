@@ -28,7 +28,7 @@ impl<H: Hal, T: Transport> VirtIOInput<H, T> {
     pub fn new(mut transport: T) -> Result<Self, Error> {
         let mut event_buf = Box::new([InputEvent::default(); QUEUE_SIZE]);
 
-        let negotiated_features = transport.begin_init(SUPPORTED_FEATURES);
+        let negotiated_features = transport.begin_init(SUPPORTED_FEATURES)?;
 
         let mut event_queue = VirtQueue::new(
             &mut transport,

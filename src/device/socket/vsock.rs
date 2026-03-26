@@ -249,7 +249,7 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BU
     pub fn new(mut transport: T) -> Result<Self> {
         assert!(RX_BUFFER_SIZE > size_of::<VirtioVsockHdr>());
 
-        let negotiated_features = transport.begin_init(SUPPORTED_FEATURES);
+        let negotiated_features = transport.begin_init(SUPPORTED_FEATURES)?;
 
         let guest_cid = transport.read_consistent(|| {
             Ok(
