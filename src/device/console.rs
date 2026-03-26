@@ -91,7 +91,7 @@ impl Display for Size {
 impl<H: Hal, T: Transport> VirtIOConsole<H, T> {
     /// Creates a new VirtIO console driver.
     pub fn new(mut transport: T) -> Result<Self> {
-        let negotiated_features = transport.begin_init(SUPPORTED_FEATURES);
+        let negotiated_features = transport.begin_init(SUPPORTED_FEATURES)?;
         let receiveq = VirtQueue::new(
             &mut transport,
             QUEUE_RECEIVEQ_PORT_0,

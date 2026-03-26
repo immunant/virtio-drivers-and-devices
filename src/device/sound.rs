@@ -64,7 +64,7 @@ pub struct VirtIOSound<H: Hal, T: Transport> {
 impl<H: Hal, T: Transport> VirtIOSound<H, T> {
     /// Create a new VirtIO-Sound driver.
     pub fn new(mut transport: T) -> Result<Self> {
-        let negotiated_features = transport.begin_init(SUPPORTED_FEATURES);
+        let negotiated_features = transport.begin_init(SUPPORTED_FEATURES)?;
         info!(
             "[sound device] negotiated_features: {:?}",
             negotiated_features
