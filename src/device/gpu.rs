@@ -189,7 +189,7 @@ impl<H: Hal, T: Transport> VirtIOGpu<H, T> {
         self.control_queue.add_notify_wait_pop(
             &[&self.queue_buf_send],
             &mut [&mut self.queue_buf_recv],
-            &mut self.transport,
+            |q| self.transport.notify(q),
         )?;
         Ok(Rsp::read_from_prefix(&self.queue_buf_recv).unwrap().0)
     }
@@ -200,7 +200,7 @@ impl<H: Hal, T: Transport> VirtIOGpu<H, T> {
         self.cursor_queue.add_notify_wait_pop(
             &[&self.queue_buf_send],
             &mut [],
-            &mut self.transport,
+            |q| self.transport.notify(q),
         )?;
         Ok(())
     }

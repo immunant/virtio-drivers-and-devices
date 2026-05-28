@@ -265,13 +265,13 @@ impl<H: Hal, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, T, QUEUE_SIZ
                     self.send_queue.add_notify_wait_pop(
                         &[header.as_bytes()],
                         &mut [],
-                        &mut self.transport,
+                        |q| self.transport.notify(q),
                     )?;
                 } else {
                     self.send_queue.add_notify_wait_pop(
                         &[header.as_bytes(), tx_buf],
                         &mut [],
-                        &mut self.transport,
+                        |q| self.transport.notify(q),
                     )?;
                 }
             }};
