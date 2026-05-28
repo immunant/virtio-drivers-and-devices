@@ -444,6 +444,15 @@ impl<T: Transport> VirtIOSocketShared<T> {
     pub fn guest_cid(&self) -> u64 {
         self.guest_cid
     }
+
+    /// Returns a shared reference to the transport.
+    ///
+    /// This is safe because mutable access only occurs in [`Drop`], which runs after all
+    /// [`Arc`] references are gone.
+    pub fn transport(&self) -> &T {
+        // SAFETY: No mutable references to transport exist while any Arc<Self> is alive.
+        unsafe { &*self.transport.get() }
+    }
 }
 
 impl<T: Transport> Drop for VirtIOSocketShared<T> {
@@ -482,15 +491,17 @@ pub struct VirtIOSocketRx<
 }
 
 impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BUFFER_SIZE> {
-    /// Splits the socket into independent TX and RX halves.
+    /// Splits the socket into independent TX and RX halves, plus shared transport state.
     ///
     /// This allows sending and receiving packets concurrently without requiring a single lock
-    /// over the entire socket.
+    /// over the entire socket. The returned [`Arc<VirtIOSocketShared>`] provides access to
+    /// the transport (e.g. for acknowledging interrupts).
     pub fn split(
         self,
     ) -> (
         VirtIOSocketTx<H, T>,
         VirtIOSocketRx<H, T, RX_BUFFER_SIZE>,
+        Arc<VirtIOSocketShared<T>>,
     ) {
         let this = ManuallyDrop::new(self);
 
@@ -516,7 +527,12 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BU
                 shared: shared.clone(),
                 tx,
             },
-            VirtIOSocketRx { shared, rx, event },
+            VirtIOSocketRx {
+                shared: shared.clone(),
+                rx,
+                event,
+            },
+            shared,
         )
     }
 }
