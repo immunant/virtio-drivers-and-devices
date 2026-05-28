@@ -12,7 +12,10 @@ use crate::hal::{DeviceHal, Hal};
 use crate::queue::{owning::OwningQueue, DeviceVirtQueue, VirtQueue};
 use crate::transport::{DeviceTransport, InterruptStatus, Transport};
 use crate::Result;
-use core::mem::size_of;
+use alloc::sync::Arc;
+use core::cell::UnsafeCell;
+use core::mem::{size_of, ManuallyDrop};
+use core::ptr;
 use log::debug;
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -375,12 +378,12 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BU
     fn send_packet_to_tx_queue(&mut self, header: &VirtioVsockHdr, buffer: &[u8]) -> Result {
         let _len = if buffer.is_empty() {
             self.tx
-                .add_notify_wait_pop(&[header.as_bytes()], &mut [], &mut self.transport)?
+                .add_notify_wait_pop(&[header.as_bytes()], &mut [], |q| self.transport.notify(q))?
         } else {
             self.tx.add_notify_wait_pop(
                 &[header.as_bytes(), buffer],
                 &mut [],
-                &mut self.transport,
+                |q| self.transport.notify(q),
             )?
         };
         Ok(())
@@ -415,7 +418,409 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocketManager
         &mut self,
         handler: impl FnOnce(VsockEvent, &[u8]) -> Result<Option<VsockEvent>>,
     ) -> Result<Option<VsockEvent>> {
-        self.rx.poll(&mut self.transport, |buffer| {
+        self.rx.poll(|q| self.transport.notify(q), |buffer| {
+            let (header, body) = read_header_and_body(buffer)?;
+            VsockEvent::from_header(&header).and_then(|event| handler(event, body))
+        })
+    }
+}
+
+/// Shared state between the TX and RX halves of a split [`VirtIOSocket`].
+///
+/// This is created by [`VirtIOSocket::split`] and should not be constructed directly.
+pub struct VirtIOSocketShared<T: Transport> {
+    transport: UnsafeCell<T>,
+    guest_cid: u64,
+}
+
+impl<T: Transport> VirtIOSocketShared<T> {
+    fn notify(&self, queue: u16) {
+        // SAFETY: No mutable references to transport exist while notify is called.
+        // Mutable access only happens in Drop, which runs after all Arc references are gone.
+        unsafe { &*self.transport.get() }.notify(queue);
+    }
+
+    /// Returns the CID which has been assigned to this guest.
+    pub fn guest_cid(&self) -> u64 {
+        self.guest_cid
+    }
+}
+
+impl<T: Transport> Drop for VirtIOSocketShared<T> {
+    fn drop(&mut self) {
+        let transport = self.transport.get_mut();
+        transport.queue_unset(RX_QUEUE_IDX);
+        transport.queue_unset(TX_QUEUE_IDX);
+        transport.queue_unset(EVENT_QUEUE_IDX);
+    }
+}
+
+// SAFETY: The UnsafeCell<T> is only accessed mutably in Drop (when no other references exist)
+// and immutably (for notify) otherwise. Transport::notify takes &self.
+unsafe impl<T: Transport + Send> Send for VirtIOSocketShared<T> {}
+unsafe impl<T: Transport + Sync> Sync for VirtIOSocketShared<T> {}
+
+/// The TX half of a split [`VirtIOSocket`], for sending packets.
+///
+/// Created by [`VirtIOSocket::split`].
+pub struct VirtIOSocketTx<H: Hal, T: Transport> {
+    shared: Arc<VirtIOSocketShared<T>>,
+    tx: VirtQueue<H, { QUEUE_SIZE }>,
+}
+
+/// The RX half of a split [`VirtIOSocket`], for receiving packets.
+///
+/// Created by [`VirtIOSocket::split`].
+pub struct VirtIOSocketRx<
+    H: Hal,
+    T: Transport,
+    const RX_BUFFER_SIZE: usize = DEFAULT_RX_BUFFER_SIZE,
+> {
+    shared: Arc<VirtIOSocketShared<T>>,
+    rx: OwningQueue<H, QUEUE_SIZE, RX_BUFFER_SIZE>,
+    event: VirtQueue<H, { QUEUE_SIZE }>,
+}
+
+impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BUFFER_SIZE> {
+    /// Splits the socket into independent TX and RX halves.
+    ///
+    /// This allows sending and receiving packets concurrently without requiring a single lock
+    /// over the entire socket.
+    pub fn split(
+        self,
+    ) -> (
+        VirtIOSocketTx<H, T>,
+        VirtIOSocketRx<H, T, RX_BUFFER_SIZE>,
+    ) {
+        let this = ManuallyDrop::new(self);
+
+        // SAFETY: We're moving fields out of `this` which won't be dropped thanks to ManuallyDrop.
+        // Each field is read exactly once.
+        let (transport, rx, tx, event, guest_cid) = unsafe {
+            (
+                ptr::read(&this.transport),
+                ptr::read(&this.rx),
+                ptr::read(&this.tx),
+                ptr::read(&this.event),
+                this.guest_cid,
+            )
+        };
+
+        let shared = Arc::new(VirtIOSocketShared {
+            transport: UnsafeCell::new(transport),
+            guest_cid,
+        });
+
+        (
+            VirtIOSocketTx {
+                shared: shared.clone(),
+                tx,
+            },
+            VirtIOSocketRx { shared, rx, event },
+        )
+    }
+}
+
+impl<H: Hal, T: Transport> VirtIOSocketTx<H, T> {
+    /// Returns the CID which has been assigned to this guest.
+    pub fn guest_cid(&self) -> u64 {
+        self.shared.guest_cid
+    }
+
+    /// Sends a packet with the given header and body to the TX queue.
+    fn send_packet(&mut self, header: &VirtioVsockHdr, buffer: &[u8]) -> Result {
+        let shared = &self.shared;
+        let _len = if buffer.is_empty() {
+            self.tx
+                .add_notify_wait_pop(&[header.as_bytes()], &mut [], |q| shared.notify(q))?
+        } else {
+            self.tx.add_notify_wait_pop(
+                &[header.as_bytes(), buffer],
+                &mut [],
+                |q| shared.notify(q),
+            )?
+        };
+        Ok(())
+    }
+
+    /// Sends a request to connect to the given destination.
+    pub fn connect(&mut self, connection_info: &ConnectionInfo) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::Request.into(),
+            ..connection_info.new_header(self.shared.guest_cid)
+        };
+        self.send_packet(&header, &[])
+    }
+
+    /// Accepts the given connection from a peer.
+    pub fn accept(&mut self, connection_info: &ConnectionInfo) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::Response.into(),
+            ..connection_info.new_header(self.shared.guest_cid)
+        };
+        self.send_packet(&header, &[])
+    }
+
+    /// Requests the peer to send us a credit update for the given connection.
+    pub fn request_credit(&mut self, connection_info: &ConnectionInfo) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::CreditRequest.into(),
+            ..connection_info.new_header(self.shared.guest_cid)
+        };
+        self.send_packet(&header, &[])
+    }
+
+    /// Sends the buffer to the destination.
+    pub fn send(&mut self, buffer: &[u8], connection_info: &mut ConnectionInfo) -> Result {
+        if connection_info.peer_free() as usize >= buffer.len() {
+            let len = buffer.len() as u32;
+            let header = VirtioVsockHdr {
+                op: VirtioVsockOp::Rw.into(),
+                len: len.into(),
+                ..connection_info.new_header(self.shared.guest_cid)
+            };
+            connection_info.tx_cnt += len;
+            self.send_packet(&header, buffer)
+        } else {
+            if !connection_info.has_pending_credit_request {
+                self.request_credit(connection_info)?;
+                connection_info.has_pending_credit_request = true;
+            }
+            Err(SocketError::InsufficientBufferSpaceInPeer.into())
+        }
+    }
+
+    /// Tells the peer how much buffer space we have to receive data.
+    pub fn credit_update(&mut self, connection_info: &ConnectionInfo) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::CreditUpdate.into(),
+            ..connection_info.new_header(self.shared.guest_cid)
+        };
+        self.send_packet(&header, &[])
+    }
+
+    /// Requests to shut down the connection cleanly, sending hints about whether we will send or
+    /// receive more data.
+    pub fn shutdown_with_hints(
+        &mut self,
+        connection_info: &ConnectionInfo,
+        hints: StreamShutdown,
+    ) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::Shutdown.into(),
+            flags: hints.into(),
+            ..connection_info.new_header(self.shared.guest_cid)
+        };
+        self.send_packet(&header, &[])
+    }
+
+    /// Requests to shut down the connection cleanly, telling the peer that we won't send or receive
+    /// any more data.
+    pub fn shutdown(&mut self, connection_info: &ConnectionInfo) -> Result {
+        self.shutdown_with_hints(
+            connection_info,
+            StreamShutdown::SEND | StreamShutdown::RECEIVE,
+        )
+    }
+
+    /// Forcibly closes the connection without waiting for the peer.
+    pub fn force_close(&mut self, connection_info: &ConnectionInfo) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::Rst.into(),
+            ..connection_info.new_header(self.shared.guest_cid)
+        };
+        self.send_packet(&header, &[])
+    }
+}
+
+impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocketRx<H, T, RX_BUFFER_SIZE> {
+    /// Returns the CID which has been assigned to this guest.
+    pub fn guest_cid(&self) -> u64 {
+        self.shared.guest_cid
+    }
+
+    /// Polls the RX virtqueue for the next event, and calls the given handler function to handle
+    /// it.
+    pub fn poll(
+        &mut self,
+        handler: impl FnOnce(VsockEvent, &[u8]) -> Result<Option<VsockEvent>>,
+    ) -> Result<Option<VsockEvent>> {
+        let shared = &self.shared;
+        self.rx.poll(|q| shared.notify(q), |buffer| {
+            let (header, body) = read_header_and_body(buffer)?;
+            VsockEvent::from_header(&header).and_then(|event| handler(event, body))
+        })
+    }
+}
+
+/// Shared state between the TX and RX halves of a split [`VirtIOSocketDevice`].
+pub struct VirtIOSocketDeviceShared<T: DeviceTransport> {
+    transport: T,
+}
+
+impl<T: DeviceTransport> VirtIOSocketDeviceShared<T> {
+    fn notify(&self, queue: u16) {
+        self.transport.notify(queue);
+    }
+}
+
+/// The TX half of a split [`VirtIOSocketDevice`], for sending packets to the driver.
+///
+/// Sends through the driver's RX queue.
+pub struct VirtIOSocketDeviceTx<H: DeviceHal, T: DeviceTransport> {
+    shared: Arc<VirtIOSocketDeviceShared<T>>,
+    /// The driver's RX queue, through which the device sends.
+    rx: DeviceVirtQueue<H, { QUEUE_SIZE }>,
+}
+
+/// The RX half of a split [`VirtIOSocketDevice`], for receiving packets from the driver.
+///
+/// Receives from the driver's TX queue.
+pub struct VirtIOSocketDeviceRx<H: DeviceHal, T: DeviceTransport> {
+    shared: Arc<VirtIOSocketDeviceShared<T>>,
+    /// The driver's TX queue, from which the device receives.
+    tx: DeviceVirtQueue<H, { QUEUE_SIZE }>,
+    event: DeviceVirtQueue<H, { QUEUE_SIZE }>,
+}
+
+impl<H: DeviceHal, T: DeviceTransport> VirtIOSocketDevice<H, T> {
+    /// Splits the device into independent TX and RX halves.
+    ///
+    /// This allows sending and receiving packets concurrently without requiring a single lock
+    /// over the entire device.
+    pub fn split(
+        self,
+    ) -> (
+        VirtIOSocketDeviceTx<H, T>,
+        VirtIOSocketDeviceRx<H, T>,
+    ) {
+        let this = ManuallyDrop::new(self);
+
+        // SAFETY: We're moving fields out of `this` which won't be dropped thanks to ManuallyDrop.
+        let (transport, rx, tx, event) = unsafe {
+            (
+                ptr::read(&this.transport),
+                ptr::read(&this.rx),
+                ptr::read(&this.tx),
+                ptr::read(&this.event),
+            )
+        };
+
+        let shared = Arc::new(VirtIOSocketDeviceShared { transport });
+
+        (
+            VirtIOSocketDeviceTx {
+                shared: shared.clone(),
+                rx,
+            },
+            VirtIOSocketDeviceRx { shared, tx, event },
+        )
+    }
+}
+
+impl<H: DeviceHal, T: DeviceTransport> VirtIOSocketDeviceTx<H, T> {
+    /// Sends a packet with the given header and body to the driver's RX queue.
+    fn send_packet(&mut self, header: &VirtioVsockHdr, buffer: &[u8]) -> Result {
+        let shared = &self.shared;
+        if buffer.is_empty() {
+            self.rx
+                .wait_pop_add_notify(&[header.as_bytes()], |q| shared.notify(q))?
+        } else {
+            self.rx
+                .wait_pop_add_notify(&[header.as_bytes(), buffer], |q| shared.notify(q))?
+        }
+        Ok(())
+    }
+
+    /// Accepts the given connection from a peer.
+    pub fn accept(&mut self, connection_info: &ConnectionInfo) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::Response.into(),
+            ..connection_info.new_header(VMADDR_CID_HOST)
+        };
+        self.send_packet(&header, &[])
+    }
+
+    /// Requests the peer to send us a credit update for the given connection.
+    pub fn request_credit(&mut self, connection_info: &ConnectionInfo) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::CreditRequest.into(),
+            ..connection_info.new_header(VMADDR_CID_HOST)
+        };
+        self.send_packet(&header, &[])
+    }
+
+    /// Sends the buffer to the destination.
+    pub fn send(&mut self, buffer: &[u8], connection_info: &mut ConnectionInfo) -> Result {
+        if connection_info.peer_free() as usize >= buffer.len() {
+            let len = buffer.len() as u32;
+            let header = VirtioVsockHdr {
+                op: VirtioVsockOp::Rw.into(),
+                len: len.into(),
+                ..connection_info.new_header(VMADDR_CID_HOST)
+            };
+            connection_info.tx_cnt += len;
+            self.send_packet(&header, buffer)
+        } else {
+            if !connection_info.has_pending_credit_request {
+                self.request_credit(connection_info)?;
+                connection_info.has_pending_credit_request = true;
+            }
+            Err(SocketError::InsufficientBufferSpaceInPeer.into())
+        }
+    }
+
+    /// Tells the peer how much buffer space we have to receive data.
+    pub fn credit_update(&mut self, connection_info: &ConnectionInfo) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::CreditUpdate.into(),
+            ..connection_info.new_header(VMADDR_CID_HOST)
+        };
+        self.send_packet(&header, &[])
+    }
+
+    /// Requests to shut down the connection cleanly, sending hints about whether we will send or
+    /// receive more data.
+    pub fn shutdown_with_hints(
+        &mut self,
+        connection_info: &ConnectionInfo,
+        hints: StreamShutdown,
+    ) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::Shutdown.into(),
+            flags: hints.into(),
+            ..connection_info.new_header(VMADDR_CID_HOST)
+        };
+        self.send_packet(&header, &[])
+    }
+
+    /// Requests to shut down the connection cleanly.
+    pub fn shutdown(&mut self, connection_info: &ConnectionInfo) -> Result {
+        self.shutdown_with_hints(
+            connection_info,
+            StreamShutdown::SEND | StreamShutdown::RECEIVE,
+        )
+    }
+
+    /// Forcibly closes the connection without waiting for the peer.
+    pub fn force_close(&mut self, connection_info: &ConnectionInfo) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::Rst.into(),
+            ..connection_info.new_header(VMADDR_CID_HOST)
+        };
+        self.send_packet(&header, &[])
+    }
+}
+
+impl<H: DeviceHal, T: DeviceTransport> VirtIOSocketDeviceRx<H, T> {
+    /// Polls the driver's TX queue for the next event, and calls the given handler function to
+    /// handle it.
+    pub fn poll(
+        &mut self,
+        handler: impl FnOnce(VsockEvent, &[u8]) -> Result<Option<VsockEvent>>,
+    ) -> Result<Option<VsockEvent>> {
+        let shared = &self.shared;
+        self.tx.poll(|q| shared.notify(q), |buffer| {
             let (header, body) = read_header_and_body(buffer)?;
             VsockEvent::from_header(&header).and_then(|event| handler(event, body))
         })
@@ -452,10 +857,10 @@ impl<H: DeviceHal, T: DeviceTransport> VirtIOSocketManager for VirtIOSocketDevic
     fn send_packet_to_queue(&mut self, header: &VirtioVsockHdr, buffer: &[u8]) -> Result {
         if buffer.is_empty() {
             self.rx
-                .wait_pop_add_notify(&[header.as_bytes()], &mut self.transport)?
+                .wait_pop_add_notify(&[header.as_bytes()], |q| self.transport.notify(q))?
         } else {
             self.rx
-                .wait_pop_add_notify(&[header.as_bytes(), buffer], &mut self.transport)?
+                .wait_pop_add_notify(&[header.as_bytes(), buffer], |q| self.transport.notify(q))?
         }
         Ok(())
     }
@@ -463,7 +868,7 @@ impl<H: DeviceHal, T: DeviceTransport> VirtIOSocketManager for VirtIOSocketDevic
         &mut self,
         handler: impl FnOnce(VsockEvent, &[u8]) -> Result<Option<VsockEvent>>,
     ) -> Result<Option<VsockEvent>> {
-        self.tx.poll(&mut self.transport, |buffer| {
+        self.tx.poll(|q| self.transport.notify(q), |buffer| {
             let (header, body) = read_header_and_body(buffer)?;
             VsockEvent::from_header(&header).and_then(|event| handler(event, body))
         })

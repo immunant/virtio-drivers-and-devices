@@ -20,7 +20,9 @@ pub use error::SocketError;
 pub use protocol::{StreamShutdown, VsockAddr, VMADDR_CID_HOST};
 #[cfg(feature = "alloc")]
 pub use vsock::{
-    ConnectionInfo, DisconnectReason, VirtIOSocket, VirtIOSocketDevice, VsockEvent, VsockEventType,
+    ConnectionInfo, DisconnectReason, VirtIOSocket, VirtIOSocketDevice, VirtIOSocketDeviceRx,
+    VirtIOSocketDeviceShared, VirtIOSocketDeviceTx, VirtIOSocketRx, VirtIOSocketShared,
+    VirtIOSocketTx, VsockEvent, VsockEventType,
 };
 
 #[cfg(feature = "alloc")]
