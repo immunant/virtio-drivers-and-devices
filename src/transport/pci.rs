@@ -96,6 +96,10 @@ pub struct PciTransport {
     isr_status: NonNull<Volatile<u8>>,
     /// The VirtIO device-specific configuration within some BAR.
     config_space: Option<NonNull<[u32]>>,
+    /// Cached queue notification offset for queue 0
+    queue_notify_off_0: u16,
+    /// Cached queue notification offset for queue 1
+    queue_notify_off_1: u16,
 }
 
 impl PciTransport {
@@ -164,7 +168,7 @@ impl PciTransport {
             }
         }
 
-        let common_cfg = get_bar_region::<H, _, _>(
+        let common_cfg: NonNull<CommonCfg> = get_bar_region::<H, _, _>(
             root,
             device_function,
             &common_cfg.ok_or(VirtioPciError::MissingCommonConfig)?,
@@ -194,6 +198,14 @@ impl PciTransport {
             None
         };
 
+        let (queue_notify_off_0, queue_notify_off_1) = unsafe {
+            volwrite!(common_cfg, queue_select, 0);
+            let q0 = volread!(common_cfg, queue_notify_off);
+            volwrite!(common_cfg, queue_select, 1);
+            let q1 = volread!(common_cfg, queue_notify_off);
+            (q0, q1)
+        };
+
         Ok(Self {
             device_type,
             device_function,
@@ -202,6 +214,8 @@ impl PciTransport {
             notify_off_multiplier,
             isr_status,
             config_space,
+            queue_notify_off_0,
+            queue_notify_off_1,
         })
     }
 }
@@ -251,9 +265,11 @@ impl Transport for PciTransport {
         // SAFETY: The common config and notify region pointers are valid and we checked in
         // `get_bar_region` that they were aligned.
         unsafe {
-            volwrite!(self.common_cfg, queue_select, queue);
-            // TODO: Consider caching this somewhere (per queue).
-            let queue_notify_off = volread!(self.common_cfg, queue_notify_off);
+            let queue_notify_off = match queue {
+                0 => self.queue_notify_off_0,
+                1 => self.queue_notify_off_1,
+                _ => unreachable!("queue not used"),
+            };
 
             let offset_bytes = usize::from(queue_notify_off) * self.notify_off_multiplier as usize;
             let index = offset_bytes / size_of::<u16>();
