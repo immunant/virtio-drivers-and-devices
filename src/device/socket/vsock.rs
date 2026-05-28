@@ -37,22 +37,22 @@ pub struct ConnectionInfo {
     pub src_port: u32,
     /// The last `buf_alloc` value the peer sent to us, indicating how much receive buffer space in
     /// bytes it has allocated for packet bodies.
-    peer_buf_alloc: u32,
+    pub(crate) peer_buf_alloc: u32,
     /// The last `fwd_cnt` value the peer sent to us, indicating how many bytes of packet bodies it
     /// has finished processing.
-    peer_fwd_cnt: u32,
+    pub(crate) peer_fwd_cnt: u32,
     /// The number of bytes of packet bodies which we have sent to the peer.
-    tx_cnt: u32,
+    pub(crate) tx_cnt: u32,
     /// The number of bytes of buffer space we have allocated to receive packet bodies from the
     /// peer.
     pub buf_alloc: u32,
     /// The number of bytes of packet bodies which we have received from the peer and handled.
-    fwd_cnt: u32,
+    pub(crate) fwd_cnt: u32,
     /// Whether we have recently requested credit from the peer.
     ///
     /// This is set to true when we send a `VIRTIO_VSOCK_OP_CREDIT_REQUEST`, and false when we
     /// receive a `VIRTIO_VSOCK_OP_CREDIT_UPDATE`.
-    has_pending_credit_request: bool,
+    pub(crate) has_pending_credit_request: bool,
 }
 
 impl ConnectionInfo {
