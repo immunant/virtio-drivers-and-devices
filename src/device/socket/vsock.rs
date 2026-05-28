@@ -669,6 +669,67 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocketRx<H, T, RX_
     }
 }
 
+/// Trait for the common TX operations shared by the driver and device split halves.
+///
+/// This is implemented by both [`VirtIOSocketTx`] and [`VirtIOSocketDeviceTx`], allowing
+/// code to be generic over which side it operates on.
+pub trait VsockTx {
+    /// Accepts the given connection from a peer.
+    fn accept(&mut self, connection_info: &ConnectionInfo) -> Result;
+    /// Requests the peer to send us a credit update for the given connection.
+    fn request_credit(&mut self, connection_info: &ConnectionInfo) -> Result;
+    /// Sends the buffer to the destination.
+    fn send(&mut self, buffer: &[u8], connection_info: &mut ConnectionInfo) -> Result;
+    /// Tells the peer how much buffer space we have to receive data.
+    fn credit_update(&mut self, connection_info: &ConnectionInfo) -> Result;
+    /// Requests to shut down the connection cleanly.
+    fn shutdown(&mut self, connection_info: &ConnectionInfo) -> Result;
+    /// Forcibly closes the connection without waiting for the peer.
+    fn force_close(&mut self, connection_info: &ConnectionInfo) -> Result;
+}
+
+impl<H: Hal, T: Transport> VsockTx for VirtIOSocketTx<H, T> {
+    fn accept(&mut self, connection_info: &ConnectionInfo) -> Result {
+        self.accept(connection_info)
+    }
+    fn request_credit(&mut self, connection_info: &ConnectionInfo) -> Result {
+        self.request_credit(connection_info)
+    }
+    fn send(&mut self, buffer: &[u8], connection_info: &mut ConnectionInfo) -> Result {
+        self.send(buffer, connection_info)
+    }
+    fn credit_update(&mut self, connection_info: &ConnectionInfo) -> Result {
+        self.credit_update(connection_info)
+    }
+    fn shutdown(&mut self, connection_info: &ConnectionInfo) -> Result {
+        self.shutdown(connection_info)
+    }
+    fn force_close(&mut self, connection_info: &ConnectionInfo) -> Result {
+        self.force_close(connection_info)
+    }
+}
+
+impl<H: DeviceHal, T: DeviceTransport> VsockTx for VirtIOSocketDeviceTx<H, T> {
+    fn accept(&mut self, connection_info: &ConnectionInfo) -> Result {
+        self.accept(connection_info)
+    }
+    fn request_credit(&mut self, connection_info: &ConnectionInfo) -> Result {
+        self.request_credit(connection_info)
+    }
+    fn send(&mut self, buffer: &[u8], connection_info: &mut ConnectionInfo) -> Result {
+        self.send(buffer, connection_info)
+    }
+    fn credit_update(&mut self, connection_info: &ConnectionInfo) -> Result {
+        self.credit_update(connection_info)
+    }
+    fn shutdown(&mut self, connection_info: &ConnectionInfo) -> Result {
+        self.shutdown(connection_info)
+    }
+    fn force_close(&mut self, connection_info: &ConnectionInfo) -> Result {
+        self.force_close(connection_info)
+    }
+}
+
 /// Shared state between the TX and RX halves of a split [`VirtIOSocketDevice`].
 pub struct VirtIOSocketDeviceShared<T: DeviceTransport> {
     transport: T,

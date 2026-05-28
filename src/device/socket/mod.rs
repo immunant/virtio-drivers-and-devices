@@ -27,13 +27,14 @@ pub use splitmanager::{
     split_connection_manager, split_connection_manager_with_capacity,
     split_device_connection_manager, split_device_connection_manager_with_capacity,
     ConnectionTable, SharedConnection, SplitConnectionManagerRx, SplitConnectionManagerTx,
-    SplitDeviceConnectionManagerRx, SplitDeviceConnectionManagerTx, TxAction,
+    SplitDeviceConnectionManagerRx, SplitDeviceConnectionManagerTx, SplitManagerTx,
+    SplitManagerTxImpl, TxAction,
 };
 #[cfg(feature = "alloc")]
 pub use vsock::{
     ConnectionInfo, DisconnectReason, VirtIOSocket, VirtIOSocketDevice, VirtIOSocketDeviceRx,
     VirtIOSocketDeviceShared, VirtIOSocketDeviceTx, VirtIOSocketRx, VirtIOSocketShared,
-    VirtIOSocketTx, VsockEvent, VsockEventType,
+    VirtIOSocketTx, VsockEvent, VsockEventType, VsockTx,
 };
 
 #[cfg(feature = "alloc")]
