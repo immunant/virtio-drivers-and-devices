@@ -47,7 +47,7 @@ impl<C: FromBytes + Immutable + IntoBytes> DeviceTransport for FakeTransport<C> 
         [addrs.descriptors, addrs.driver_area, addrs.device_area]
     }
 
-    fn notify(&mut self, queue: u16) {
+    fn notify(&self, queue: u16) {
         self.state.lock().unwrap().queues[queue as usize]
             .device_notified
             .store(true, Ordering::SeqCst);
@@ -71,7 +71,7 @@ impl<C: FromBytes + Immutable + IntoBytes> Transport for FakeTransport<C> {
         self.max_queue_size
     }
 
-    fn notify(&mut self, queue: u16) {
+    fn notify(&self, queue: u16) {
         self.state.lock().unwrap().queues[queue as usize]
             .notified
             .store(true, Ordering::SeqCst);

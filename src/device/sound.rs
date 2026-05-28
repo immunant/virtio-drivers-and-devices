@@ -166,7 +166,7 @@ impl<H: Hal, T: Transport> VirtIOSound<H, T> {
         self.control_queue.add_notify_wait_pop(
             &[req.as_bytes()],
             &mut [self.queue_buf_recv.as_mut_bytes()],
-            &mut self.transport,
+            |q| self.transport.notify(q),
         )?;
         Ok(VirtIOSndHdr::read_from_prefix(&self.queue_buf_recv)
             .unwrap()
@@ -714,7 +714,7 @@ impl<H: Hal, T: Transport> VirtIOSound<H, T> {
     pub fn latest_notification(&mut self) -> Result<Option<Notification>> {
         // If the device has written notifications to the event_queue,
         // then the oldest notification should be at the front of the queue.
-        self.event_queue.poll(&mut self.transport, |buffer| {
+        self.event_queue.poll(|q| self.transport.notify(q), |buffer| {
             if let Ok(event) = VirtIOSndEvent::read_from_bytes(buffer) {
                 Ok(Some(Notification {
                     notification_type: NotificationType::n(event.hdr.command_code)

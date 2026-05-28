@@ -217,14 +217,14 @@ impl<H: Hal, T: Transport> VirtIOConsole<H, T> {
     pub fn send(&mut self, chr: u8) -> Result<()> {
         let buf: [u8; 1] = [chr];
         self.transmitq
-            .add_notify_wait_pop(&[&buf], &mut [], &mut self.transport)?;
+            .add_notify_wait_pop(&[&buf], &mut [], |q| self.transport.notify(q))?;
         Ok(())
     }
 
     /// Sends one or more bytes to the console.
     pub fn send_bytes(&mut self, buffer: &[u8]) -> Result {
         self.transmitq
-            .add_notify_wait_pop(&[buffer], &mut [], &mut self.transport)?;
+            .add_notify_wait_pop(&[buffer], &mut [], |q| self.transport.notify(q))?;
         Ok(())
     }
 

@@ -45,6 +45,10 @@ pub struct HypPciTransport {
     isr_status: HypIoRegion,
     /// The VirtIO device-specific configuration within some BAR.
     config_space: Option<HypIoRegion>,
+      /// Cached queue notification offset for queue 0
+      queue_notify_off_0: u16,
+      /// Cached queue notification offset for queue 1
+      queue_notify_off_1: u16,
 }
 
 impl HypPciTransport {
@@ -140,6 +144,10 @@ impl HypPciTransport {
         } else {
             None
         };
+        configwrite!(common_cfg, queue_select, 0u16);
+        let queue_notify_off_0: u16 = configread!(common_cfg, queue_notify_off);
+        configwrite!(common_cfg, queue_select, 1u16);
+        let queue_notify_off_1: u16 = configread!(common_cfg, queue_notify_off);
 
         Ok(Self {
             device_type,
@@ -149,6 +157,8 @@ impl HypPciTransport {
             notify_off_multiplier,
             isr_status,
             config_space,
+            queue_notify_off_0,
+            queue_notify_off_1,
         })
     }
 }
@@ -183,10 +193,12 @@ impl Transport for HypPciTransport {
         queue_size.into()
     }
 
-    fn notify(&mut self, queue: u16) {
-        configwrite!(self.common_cfg, queue_select, queue);
-        // TODO: Consider caching this somewhere (per queue).
-        let queue_notify_off: u16 = configread!(self.common_cfg, queue_notify_off);
+    fn notify(&self, queue: u16) {
+        let queue_notify_off = match queue {
+            0 => self.queue_notify_off_0,
+            1 => self.queue_notify_off_1,
+            _ => unreachable!("queue not used"),
+        };
 
         let offset_bytes = usize::from(queue_notify_off) * self.notify_off_multiplier as usize;
         self.notify_region.write(offset_bytes, queue);

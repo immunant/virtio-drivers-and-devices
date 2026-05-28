@@ -111,7 +111,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
         self.queue.add_notify_wait_pop(
             &[request.as_bytes()],
             &mut [resp.as_mut_bytes()],
-            &mut self.transport,
+            |q| self.transport.notify(q),
         )?;
         resp.status.into()
     }
@@ -122,7 +122,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
         self.queue.add_notify_wait_pop(
             &[request.as_bytes()],
             &mut [data, resp.as_mut_bytes()],
-            &mut self.transport,
+            |q| self.transport.notify(q),
         )?;
         resp.status.into()
     }
@@ -133,7 +133,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
         self.queue.add_notify_wait_pop(
             &[request.as_bytes(), data],
             &mut [resp.as_mut_bytes()],
-            &mut self.transport,
+            |q| self.transport.notify(q),
         )?;
         resp.status.into()
     }

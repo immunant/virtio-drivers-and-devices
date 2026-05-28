@@ -37,7 +37,7 @@ impl<H: Hal, T: Transport> VirtIORng<H, T> {
     pub fn request_entropy(&mut self, dst: &mut [u8]) -> Result<usize> {
         let num = self
             .queue
-            .add_notify_wait_pop(&[], &mut [dst], &mut self.transport)?;
+            .add_notify_wait_pop(&[], &mut [dst], |q| self.transport.notify(q))?;
         Ok(num as usize)
     }
 

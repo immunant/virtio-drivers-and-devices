@@ -308,7 +308,7 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
         &mut self,
         inputs: &'a [&'a [u8]],
         outputs: &'a mut [&'a mut [u8]],
-        transport: &mut impl Transport,
+        notify: impl Fn(u16),
     ) -> Result<u32> {
         // SAFETY: We don't return until the same token has been popped, so the buffers remain
         // valid and are not otherwise accessed until then.
@@ -316,7 +316,7 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
 
         // Notify the queue.
         if self.should_notify() {
-            transport.notify(self.queue_idx);
+            notify(self.queue_idx);
         }
 
         // Wait until there is at least one element in the used ring.
@@ -669,7 +669,7 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
     pub fn wait_pop_add_notify(
         &mut self,
         inputs: &[&[u8]],
-        transport: &mut impl DeviceTransport,
+        notify: impl Fn(u16),
     ) -> Result<()> {
         #[cfg(feature = "alloc")]
         {
@@ -705,7 +705,7 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
             self.add_used(popped.head, head_len);
 
             if self.should_notify() {
-                transport.notify(self.queue_idx);
+                notify(self.queue_idx);
             }
             Ok(())
         }
@@ -715,7 +715,7 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
 
     pub fn poll<T>(
         &mut self,
-        transport: &mut impl DeviceTransport,
+        notify: impl Fn(u16),
         handler: impl FnOnce(&[u8]) -> Result<Option<T>>,
     ) -> Result<Option<T>> {
         #[cfg(feature = "alloc")]
@@ -747,7 +747,7 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
             );
 
             if self.should_notify() {
-                transport.notify(self.queue_idx);
+                notify(self.queue_idx);
             }
             result
         }
@@ -1716,18 +1716,18 @@ mod tests {
         // This test sends [0..10] using 1 10-byte descriptor
         let mut data: [u8; 10] = array::from_fn(|i| i as u8);
         queue_pair_test::<8>(
-            move |mut driver, mut transport| {
+            move |mut driver, transport| {
                 driver
-                    .add_notify_wait_pop(&[&data], &mut [], &mut transport)
+                    .add_notify_wait_pop(&[&data], &mut [], |q| Transport::notify(&transport, q))
                     .unwrap();
             },
-            move |mut device, mut transport| {
+            move |mut device, transport| {
                 // Wait until the driver adds to the avail vring
                 while !device.can_pop() {
                     spin_loop();
                 }
                 let poll_res = device
-                    .poll(&mut transport, |buffer| {
+                    .poll(|q| DeviceTransport::notify(&transport, q), |buffer| {
                         // Make sure what's read from the buffers matches what was send in
                         // add_notify_wait_pop
                         assert_eq!(buffer, data);
@@ -1750,23 +1750,23 @@ mod tests {
         let device_data: [u8; 10] = array::from_fn(|i| i as u8);
 
         queue_pair_test::<16>(
-            move |mut driver, mut transport| {
+            move |mut driver, transport| {
                 // Creates a &[&[u8]] from driver_data and sends it to the device
                 driver
                     .add_notify_wait_pop(
                         array::from_fn::<&[u8], 10, _>(|i| driver_data[i].as_slice()).as_slice(),
                         &mut [],
-                        &mut transport,
+                        |q| Transport::notify(&transport, q),
                     )
                     .unwrap();
             },
-            move |mut device, mut transport| {
+            move |mut device, transport| {
                 // Wait until the driver adds to the avail vring
                 while !device.can_pop() {
                     spin_loop();
                 }
                 let poll_res = device
-                    .poll(&mut transport, |buffer| {
+                    .poll(|q| DeviceTransport::notify(&transport, q), |buffer| {
                         assert_eq!(buffer, device_data);
                         Ok(Some(()))
                     })
@@ -1787,19 +1787,19 @@ mod tests {
         // The data the device will send
         let data: [u8; 10] = array::from_fn(|i| i as u8);
         queue_pair_test::<8>(
-            move |mut driver, mut transport| {
+            move |mut driver, transport| {
                 assert_eq!(buffer, [0; 10]);
                 // Add a write descriptor for the device to use then pop it
                 driver
-                    .add_notify_wait_pop(&[], &mut [&mut buffer], &mut transport)
+                    .add_notify_wait_pop(&[], &mut [&mut buffer], |q| Transport::notify(&transport, q))
                     .unwrap();
                 // Make sure the device wrote the expected data to the buffer
                 assert_eq!(buffer, data);
             },
-            move |mut device, mut transport| {
+            move |mut device, transport| {
                 // Wait until the driver adds a descriptor and write the contents of data to it
                 device
-                    .wait_pop_add_notify(&[&data], &mut transport)
+                    .wait_pop_add_notify(&[&data], |q| DeviceTransport::notify(&transport, q))
                     .unwrap();
             },
         );
@@ -1814,7 +1814,7 @@ mod tests {
         let mut buffer = [0u8; 10];
         let data: [u8; 10] = array::from_fn(|i| i as u8);
         queue_pair_test::<8>(
-            move |mut driver, mut transport| {
+            move |mut driver, transport| {
                 // Add a 1-byte read descriptor to the avail vring
                 let read_buffer = [0; 1];
                 unsafe {
@@ -1824,19 +1824,19 @@ mod tests {
                 assert_eq!(buffer, [0; 10]);
                 // Add 1 10-byte write descriptor to the avail vring
                 driver
-                    .add_notify_wait_pop(&[], &mut [&mut buffer], &mut transport)
+                    .add_notify_wait_pop(&[], &mut [&mut buffer], |q| Transport::notify(&transport, q))
                     .unwrap();
                 // Make sure the device wrote to the second descriptor
                 assert_eq!(buffer, data);
             },
-            move |mut device, mut transport| {
+            move |mut device, transport| {
                 // Wait until there's a descriptor in the avail vring
-                let res = device.wait_pop_add_notify(&[&data], &mut transport);
+                let res = device.wait_pop_add_notify(&[&data], |q| DeviceTransport::notify(&transport, q));
                 // The first descriptor will be read-only so wait_pop_add_notify should return Err
                 assert_eq!(res, Err(Error::NotReady));
                 // Wait until there's another descriptor added and use that to send data
                 device
-                    .wait_pop_add_notify(&[&data], &mut transport)
+                    .wait_pop_add_notify(&[&data], |q| DeviceTransport::notify(&transport, q))
                     .unwrap();
             },
         );
