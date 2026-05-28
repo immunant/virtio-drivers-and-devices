@@ -261,7 +261,7 @@ impl Transport for PciTransport {
         }
     }
 
-    fn notify(&mut self, queue: u16) {
+    fn notify(&self, queue: u16) {
         // SAFETY: The common config and notify region pointers are valid and we checked in
         // `get_bar_region` that they were aligned.
         unsafe {

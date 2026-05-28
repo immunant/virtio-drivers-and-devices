@@ -64,7 +64,7 @@ impl Transport for SomeTransport {
         }
     }
 
-    fn notify(&mut self, queue: u16) {
+    fn notify(&self, queue: u16) {
         match self {
             Self::Mmio(mmio) => mmio.notify(queue),
             Self::Pci(pci) => pci.notify(queue),

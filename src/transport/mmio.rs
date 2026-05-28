@@ -353,11 +353,8 @@ impl Transport for MmioTransport {
         }
     }
 
-    fn notify(&mut self, queue: u16) {
-        // SAFETY: `self.header` points to a valid VirtIO MMIO region.
-        unsafe {
-            volwrite!(self.header, queue_notify, queue.into());
-        }
+    fn notify(&self, queue: u16) {
+        todo!("support MMIO")
     }
 
     fn get_status(&self) -> DeviceStatus {
