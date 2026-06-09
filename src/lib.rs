@@ -118,6 +118,19 @@ impl From<alloc::string::FromUtf8Error> for Error {
     }
 }
 
+pub trait Lock<T>: Send + Sync {
+    type Guard<'a>: core::ops::DerefMut<Target = T> where Self: 'a, T: 'a;
+
+    fn new(data: T) -> Self;
+    fn lock(&self) -> Self::Guard<'_>;
+    fn data_ptr(&self) -> *mut T;
+}
+
+/// A generic factory trait allowing one lock type parameter to wrap multiple distinct inner types.
+pub trait LockFactory {
+    type Lock<T>: Lock<T> where T: Send;
+}
+
 /// Align `size` up to a page.
 fn align_up(size: usize) -> usize {
     (size + PAGE_SIZE) & !(PAGE_SIZE - 1)
