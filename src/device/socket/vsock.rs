@@ -469,7 +469,7 @@ impl<H: DeviceHal, T: DeviceTransport> VirtIOSocketManager for VirtIOSocketDevic
         })
     }
 }
-pub trait VirtIOSocketManager {
+pub trait VirtIOSocketManager: Send {
     fn local_cid(&self) -> u64;
     fn send_packet_to_queue(&mut self, header: &VirtioVsockHdr, buffer: &[u8]) -> Result;
     fn poll(
