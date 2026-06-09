@@ -118,6 +118,32 @@ impl From<alloc::string::FromUtf8Error> for Error {
     }
 }
 
+/// A generic lock trait which protects a value of type `T`.
+pub trait Lock<T>: Send + Sync {
+    /// A guard which releases the lock when dropped.
+    type Guard<'a>: core::ops::DerefMut<Target = T>
+    where
+        Self: 'a,
+        T: 'a;
+
+    /// Wraps the given value in a new lock.
+    fn new(data: T) -> Self;
+
+    /// Locks the value and returns a mutable guard to it.
+    fn lock(&self) -> Self::Guard<'_>;
+
+    /// Returns a raw pointer to the protected value.
+    fn data_ptr(&self) -> *mut T;
+}
+
+/// A generic factory trait allowing one lock type parameter to wrap multiple distinct inner types.
+pub trait LockFactory {
+    /// The lock type used to protect values of type `T`.
+    type Lock<T>: Lock<T>
+    where
+        T: Send;
+}
+
 /// Align `size` up to a page.
 fn align_up(size: usize) -> usize {
     (size + PAGE_SIZE) & !(PAGE_SIZE - 1)
