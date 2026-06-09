@@ -30,7 +30,7 @@ const DEFAULT_PER_CONNECTION_BUFFER_CAPACITY: u32 = 1024;
 /// use virtio_drivers_and_devices::device::socket::{VirtIOSocket, VsockAddr, VsockConnectionManager};
 ///
 /// # fn example<HalImpl: Hal, T: Transport>(transport: T) -> Result<(), Error> {
-/// let mut socket = VsockConnectionManager::new(VirtIOSocket::<HalImpl, _>::new(transport)?);
+/// let mut socket = VsockConnectionManager::new(VirtIOSocket::<HalImpl, _, _>::new(transport)?);
 ///
 /// // Start a thread to call `socket.poll()` and handle events.
 ///
@@ -51,11 +51,11 @@ pub struct VsockConnectionManager<
     T: Transport,
     L: LockFactory,
     const RX_BUFFER_SIZE: usize = DEFAULT_RX_BUFFER_SIZE,
->(VsockConnectionManagerCommon<VirtIOSocket<H, T, RX_BUFFER_SIZE>, L>);
+>(VsockConnectionManagerCommon<VirtIOSocket<H, T, L, RX_BUFFER_SIZE>, L>);
 
 /// A high level interface for VirtIO socket (vsock) devices.
 pub struct VsockDeviceConnectionManager<H: DeviceHal, T: DeviceTransport, L: LockFactory>(
-    VsockConnectionManagerCommon<VirtIOSocketDevice<H, T>, L>,
+    VsockConnectionManagerCommon<VirtIOSocketDevice<H, T, L>, L>,
 );
 
 /// A trait defining shared behavior for VirtIO socket devices and drivers.
@@ -122,8 +122,7 @@ struct VsockConnectionManagerInner<L: LockFactory> {
 }
 
 struct VsockConnectionManagerCommon<M: VirtIOSocketManager, L: LockFactory> {
-    // TODO: remove the Lock here once VirtIOSocketManager is also thread-safe
-    driver: L::Lock<M>,
+    driver: M,
     inner: L::Lock<VsockConnectionManagerInner<L>>,
 }
 
@@ -152,18 +151,18 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
     VsockConnectionManager<H, T, L, RX_BUFFER_SIZE>
 {
     /// Construct a new connection manager wrapping the given low-level VirtIO socket driver.
-    pub fn new(driver: VirtIOSocket<H, T, RX_BUFFER_SIZE>) -> Self {
+    pub fn new(driver: VirtIOSocket<H, T, L, RX_BUFFER_SIZE>) -> Self {
         Self::new_with_capacity(driver, DEFAULT_PER_CONNECTION_BUFFER_CAPACITY)
     }
 
     /// Construct a new connection manager wrapping the given low-level VirtIO socket driver, with
     /// the given per-connection buffer capacity.
     pub fn new_with_capacity(
-        driver: VirtIOSocket<H, T, RX_BUFFER_SIZE>,
+        driver: VirtIOSocket<H, T, L, RX_BUFFER_SIZE>,
         per_connection_buffer_capacity: u32,
     ) -> Self {
         Self(VsockConnectionManagerCommon {
-            driver: L::Lock::new(driver),
+            driver,
             inner: L::Lock::new(VsockConnectionManagerInner {
                 connections: Vec::new(),
                 listening_ports: Vec::new(),
@@ -183,7 +182,6 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
     /// `VsockEventType::Connected` event indicating that the peer has accepted the connection
     /// before sending data.
     pub fn connect(&self, destination: VsockAddr, src_port: u32) -> Result {
-        let mut driver = self.0.driver.lock();
         let mut inner = self.0.inner.lock();
         if inner.connections.iter().any(|connection| {
             let connection = connection.lock();
@@ -195,7 +193,7 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
         let new_connection =
             Connection::new(destination, src_port, inner.per_connection_buffer_capacity);
 
-        driver.connect(&new_connection.info)?;
+        self.0.driver.connect(&new_connection.info)?;
         debug!("Connection requested: {:?}", new_connection.info);
         inner.connections.push(L::Lock::new(new_connection));
         Ok(())
@@ -261,18 +259,18 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
 
 impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockDeviceConnectionManager<H, T, L> {
     /// Construct a new connection manager wrapping the given low-level VirtIO socket driver.
-    pub fn new(driver: VirtIOSocketDevice<H, T>) -> Self {
+    pub fn new(driver: VirtIOSocketDevice<H, T, L>) -> Self {
         Self::new_with_capacity(driver, DEFAULT_PER_CONNECTION_BUFFER_CAPACITY)
     }
 
     /// Construct a new connection manager wrapping the given low-level VirtIO socket driver, with
     /// the given per-connection buffer capacity.
     pub fn new_with_capacity(
-        driver: VirtIOSocketDevice<H, T>,
+        driver: VirtIOSocketDevice<H, T, L>,
         per_connection_buffer_capacity: u32,
     ) -> Self {
         Self(VsockConnectionManagerCommon {
-            driver: L::Lock::new(driver),
+            driver,
             inner: L::Lock::new(VsockConnectionManagerInner {
                 connections: Vec::new(),
                 listening_ports: Vec::new(),
@@ -371,10 +369,10 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> VsockMan
         Self::recv(self, peer, src_port, buffer)
     }
     unsafe fn ack_interrupt(&self) -> InterruptStatus {
-        let vsock_driver_ptr = self.0.driver.data_ptr();
+        let vsock_driver_ptr = (&raw const self.0.driver).cast_mut();
         // SAFETY: This function's safety requirements ensure that `self` points to a valid
         // VsockConnectionManager so this gives a valid pointer to the field.
-        unsafe { VirtIOSocket::<H, T, RX_BUFFER_SIZE>::ack_interrupt(vsock_driver_ptr) }
+        unsafe { VirtIOSocket::<H, T, L, RX_BUFFER_SIZE>::ack_interrupt(vsock_driver_ptr) }
     }
 }
 
@@ -429,21 +427,19 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
 
     /// Sends the buffer to the destination.
     pub fn send(&self, destination: VsockAddr, src_port: u32, buffer: &[u8]) -> Result {
-        let mut driver = self.driver.lock();
         let inner = self.inner.lock();
         let (_, mut connection) = get_connection::<L>(&inner.connections, destination, src_port)?;
 
-        driver.send(buffer, &mut connection.info)
+        self.driver.send(buffer, &mut connection.info)
     }
 
     /// Polls the vsock device to receive data or other updates.
     pub fn poll(&self) -> Result<Option<VsockEvent>> {
-        let mut driver = self.driver.lock();
         let mut inner = self.inner.lock();
-        let local_cid = driver.local_cid();
+        let local_cid = self.driver.local_cid();
         let per_connection_buffer_capacity = inner.per_connection_buffer_capacity;
 
-        let result = driver.poll(|event, body| {
+        let result = self.driver.poll(|event, body| {
             let connection = get_connection_for_event::<L>(&inner.connections, &event, local_cid);
 
             // Skip events which don't match any connection we know about, unless they are a
@@ -492,10 +488,10 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
         match event.event_type {
             VsockEventType::ConnectionRequest => {
                 if inner.listening_ports.contains(&event.destination.port) {
-                    driver.accept(&connection.info)?;
+                    self.driver.accept(&connection.info)?;
                 } else {
                     // Reject the connection request and remove it from our list.
-                    driver.force_close(&connection.info)?;
+                    self.driver.force_close(&connection.info)?;
                     drop(connection);
                     inner.connections.swap_remove(connection_index);
 
@@ -508,7 +504,7 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
                 // Wait until client reads all data before removing connection.
                 if connection.buffer.is_empty() {
                     if reason == DisconnectReason::Shutdown {
-                        driver.force_close(&connection.info)?;
+                        self.driver.force_close(&connection.info)?;
                     }
                     drop(connection);
                     inner.connections.swap_remove(connection_index);
@@ -521,7 +517,7 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
             }
             VsockEventType::CreditRequest => {
                 // If the peer requested credit, send an update.
-                driver.credit_update(&connection.info)?;
+                self.driver.credit_update(&connection.info)?;
                 // No need to pass the request on to the client, we've already handled it.
                 return Ok(None);
             }
@@ -533,12 +529,11 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
 
     /// Returns the local CID of the vsock device.
     pub fn local_cid(&self) -> u64 {
-        self.driver.lock().local_cid()
+        self.driver.local_cid()
     }
 
     /// Reads data received from the given connection.
     pub fn recv(&self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
-        let mut driver = self.driver.lock();
         let mut inner = self.inner.lock();
         let (connection_index, mut connection) =
             get_connection::<L>(&inner.connections, peer, src_port)?;
@@ -551,7 +546,7 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
         // If buffer is now empty and the peer requested shutdown, finish shutting down the
         // connection.
         if connection.peer_requested_shutdown && connection.buffer.is_empty() {
-            driver.force_close(&connection.info)?;
+            self.driver.force_close(&connection.info)?;
             drop(connection);
             inner.connections.swap_remove(connection_index);
         }
@@ -571,10 +566,9 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
 
     /// Sends a credit update to the given peer.
     pub fn update_credit(&self, peer: VsockAddr, src_port: u32) -> Result {
-        let mut driver = self.driver.lock();
         let inner = self.inner.lock();
         let (_, connection) = get_connection::<L>(&inner.connections, peer, src_port)?;
-        driver.credit_update(&connection.info)
+        self.driver.credit_update(&connection.info)
     }
 
     /// Blocks until we get some event from the vsock device.
@@ -595,20 +589,18 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
     /// `VsockEventType::Disconnected` event if you want to know that the peer has acknowledged the
     /// shutdown.
     pub fn shutdown(&self, destination: VsockAddr, src_port: u32) -> Result {
-        let mut driver = self.driver.lock();
         let inner = self.inner.lock();
         let (_, connection) = get_connection::<L>(&inner.connections, destination, src_port)?;
 
-        driver.shutdown(&connection.info)
+        self.driver.shutdown(&connection.info)
     }
 
     /// Forcibly closes the connection without waiting for the peer.
     pub fn force_close(&self, destination: VsockAddr, src_port: u32) -> Result {
-        let mut driver = self.driver.lock();
         let mut inner = self.inner.lock();
         let (index, connection) = get_connection::<L>(&inner.connections, destination, src_port)?;
 
-        driver.force_close(&connection.info)?;
+        self.driver.force_close(&connection.info)?;
         drop(connection);
 
         inner.connections.swap_remove(index);
