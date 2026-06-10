@@ -183,7 +183,7 @@ impl Transport for HypPciTransport {
         queue_size.into()
     }
 
-    fn notify(&mut self, queue: u16) {
+    fn notify(&self, queue: u16) {
         configwrite!(self.common_cfg, queue_select, queue);
         // TODO: Consider caching this somewhere (per queue).
         let queue_notify_off: u16 = configread!(self.common_cfg, queue_notify_off);

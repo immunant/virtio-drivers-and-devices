@@ -375,12 +375,12 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocket<H, T, RX_BU
     fn send_packet_to_tx_queue(&mut self, header: &VirtioVsockHdr, buffer: &[u8]) -> Result {
         let _len = if buffer.is_empty() {
             self.tx
-                .add_notify_wait_pop(&[header.as_bytes()], &mut [], &mut self.transport)?
+                .add_notify_wait_pop(&[header.as_bytes()], &mut [], &self.transport)?
         } else {
             self.tx.add_notify_wait_pop(
                 &[header.as_bytes(), buffer],
                 &mut [],
-                &mut self.transport,
+                &self.transport,
             )?
         };
         Ok(())
@@ -415,7 +415,7 @@ impl<H: Hal, T: Transport, const RX_BUFFER_SIZE: usize> VirtIOSocketManager
         &mut self,
         handler: impl FnOnce(VsockEvent, &[u8]) -> Result<Option<VsockEvent>>,
     ) -> Result<Option<VsockEvent>> {
-        self.rx.poll(&mut self.transport, |buffer| {
+        self.rx.poll(&self.transport, |buffer| {
             let (header, body) = read_header_and_body(buffer)?;
             VsockEvent::from_header(&header).and_then(|event| handler(event, body))
         })
@@ -452,10 +452,10 @@ impl<H: DeviceHal, T: DeviceTransport> VirtIOSocketManager for VirtIOSocketDevic
     fn send_packet_to_queue(&mut self, header: &VirtioVsockHdr, buffer: &[u8]) -> Result {
         if buffer.is_empty() {
             self.rx
-                .wait_pop_add_notify(&[header.as_bytes()], &mut self.transport)?
+                .wait_pop_add_notify(&[header.as_bytes()], &self.transport)?
         } else {
             self.rx
-                .wait_pop_add_notify(&[header.as_bytes(), buffer], &mut self.transport)?
+                .wait_pop_add_notify(&[header.as_bytes(), buffer], &self.transport)?
         }
         Ok(())
     }
@@ -463,7 +463,7 @@ impl<H: DeviceHal, T: DeviceTransport> VirtIOSocketManager for VirtIOSocketDevic
         &mut self,
         handler: impl FnOnce(VsockEvent, &[u8]) -> Result<Option<VsockEvent>>,
     ) -> Result<Option<VsockEvent>> {
-        self.tx.poll(&mut self.transport, |buffer| {
+        self.tx.poll(&self.transport, |buffer| {
             let (header, body) = read_header_and_body(buffer)?;
             VsockEvent::from_header(&header).and_then(|event| handler(event, body))
         })

@@ -32,7 +32,7 @@ pub trait DeviceTransport: Send {
     fn queue_get(&mut self, queue: u16) -> [PhysAddr; 3];
 
     /// Notifies the given queue on the device.
-    fn notify(&mut self, queue: u16);
+    fn notify(&self, queue: u16);
 }
 
 /// A VirtIO transport layer.
@@ -50,7 +50,7 @@ pub trait Transport: Send {
     fn max_queue_size(&mut self, queue: u16) -> u32;
 
     /// Notifies the given queue on the device.
-    fn notify(&mut self, queue: u16);
+    fn notify(&self, queue: u16);
 
     /// Gets the device status.
     fn get_status(&self) -> DeviceStatus;
