@@ -115,14 +115,14 @@ struct VsockConnectionManagerInner<L: LockFactory> {
     listening_ports: Vec<u32>,
 }
 
-struct VsockConnectionManagerCommon<M: VirtIOSocketManager, L: LockFactory> {
+struct VsockConnectionManagerCommon<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory> {
     driver: M,
     inner: L::Lock<VsockConnectionManagerInner<L>>,
 }
 
 #[derive(Debug)]
-struct Connection {
-    info: ConnectionInfo,
+pub(crate) struct Connection {
+    pub(crate) info: ConnectionInfo,
     buffer: RingBuffer,
     /// The peer sent a SHUTDOWN request, but we haven't yet responded with a RST because there is
     /// still data in the buffer.
@@ -186,10 +186,11 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
 
         let new_connection =
             Connection::new(destination, src_port, inner.per_connection_buffer_capacity);
+        let new_connection = L::Lock::new(new_connection);
 
-        self.0.driver.connect(&new_connection.info)?;
-        debug!("Connection requested: {:?}", new_connection.info);
-        inner.connections.push(L::Lock::new(new_connection));
+        self.0.driver.connect(new_connection.lock())?;
+        debug!("Connection requested: {:?}", new_connection.lock().info);
+        inner.connections.push(new_connection);
         Ok(())
     }
     /// Allows incoming connections on the given port number.
@@ -403,7 +404,7 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockManager for VsockDev
     }
 }
 
-impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> {
+impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory> VsockConnectionManagerCommon<M, L> {
     /// Allows incoming connections on the given port number.
     pub fn listen(&self, port: u32) {
         let mut inner = self.inner.lock();
@@ -422,7 +423,7 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
         let mut inner = self.inner.lock();
         let (_, mut connection) = get_connection::<L>(&inner.connections, destination, src_port)?;
 
-        self.driver.send(buffer, &mut connection.info)
+        self.driver.send(buffer, connection)
     }
 
     /// Polls the vsock device to receive data or other updates.
@@ -480,11 +481,10 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
         match event.event_type {
             VsockEventType::ConnectionRequest => {
                 if inner.listening_ports.contains(&event.destination.port) {
-                    self.driver.accept(&connection.info)?;
+                    self.driver.accept(connection)?;
                 } else {
                     // Reject the connection request and remove it from our list.
-                    self.driver.force_close(&connection.info)?;
-                    drop(connection);
+                    self.driver.force_close(connection)?;
                     inner.connections.swap_remove(connection_index);
 
                     // No need to pass the request on to the client, as we've already rejected it.
@@ -496,9 +496,13 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
                 // Wait until client reads all data before removing connection.
                 if connection.buffer.is_empty() {
                     if reason == DisconnectReason::Shutdown {
-                        self.driver.force_close(&connection.info)?;
+                        self.driver.force_close(connection)?;
+                    } else {
+                        // We need to drop `connection` before mutating the array.
+                        // `force_close` takes ownership of it on the other branch,
+                        // so we drop it explicitly here.
+                        drop(connection);
                     }
-                    drop(connection);
                     inner.connections.swap_remove(connection_index);
                 } else {
                     connection.peer_requested_shutdown = true;
@@ -509,7 +513,7 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
             }
             VsockEventType::CreditRequest => {
                 // If the peer requested credit, send an update.
-                self.driver.credit_update(&connection.info)?;
+                self.driver.credit_update(connection)?;
                 // No need to pass the request on to the client, we've already handled it.
                 return Ok(None);
             }
@@ -537,8 +541,7 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
         // If buffer is now empty and the peer requested shutdown, finish shutting down the
         // connection.
         if connection.peer_requested_shutdown && connection.buffer.is_empty() {
-            self.driver.force_close(&connection.info)?;
-            drop(connection);
+            self.driver.force_close(connection)?;
             inner.connections.swap_remove(connection_index);
         }
 
@@ -559,7 +562,7 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
     pub fn update_credit(&self, peer: VsockAddr, src_port: u32) -> Result {
         let mut inner = self.inner.lock();
         let (_, connection) = get_connection::<L>(&inner.connections, peer, src_port)?;
-        self.driver.credit_update(&connection.info)
+        self.driver.credit_update(connection)
     }
 
     /// Blocks until we get some event from the vsock device.
@@ -583,7 +586,7 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
         let mut inner = self.inner.lock();
         let (_, connection) = get_connection::<L>(&inner.connections, destination, src_port)?;
 
-        self.driver.shutdown(&connection.info)
+        self.driver.shutdown(connection)
     }
 
     /// Forcibly closes the connection without waiting for the peer.
@@ -591,8 +594,7 @@ impl<M: VirtIOSocketManager, L: LockFactory> VsockConnectionManagerCommon<M, L> 
         let mut inner = self.inner.lock();
         let (index, connection) = get_connection::<L>(&inner.connections, destination, src_port)?;
 
-        self.driver.force_close(&connection.info)?;
-        drop(connection);
+        self.driver.force_close(connection)?;
 
         inner.connections.swap_remove(index);
         Ok(())
