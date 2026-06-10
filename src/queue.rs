@@ -308,7 +308,7 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
         &mut self,
         inputs: &'a [&'a [u8]],
         outputs: &'a mut [&'a mut [u8]],
-        transport: &mut impl Transport,
+        transport: &impl Transport,
     ) -> Result<u32> {
         // SAFETY: We don't return until the same token has been popped, so the buffers remain
         // valid and are not otherwise accessed until then.
@@ -669,7 +669,7 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
     pub fn wait_pop_add_notify(
         &mut self,
         inputs: &[&[u8]],
-        transport: &mut impl DeviceTransport,
+        transport: &impl DeviceTransport,
     ) -> Result<()> {
         #[cfg(feature = "alloc")]
         {
@@ -715,7 +715,7 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
 
     pub fn poll<T>(
         &mut self,
-        transport: &mut impl DeviceTransport,
+        transport: &impl DeviceTransport,
         handler: impl FnOnce(&[u8]) -> Result<Option<T>>,
     ) -> Result<Option<T>> {
         #[cfg(feature = "alloc")]
