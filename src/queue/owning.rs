@@ -54,7 +54,7 @@ impl<H: Hal, const SIZE: usize, const BUFFER_SIZE: usize> OwningQueue<H, SIZE, B
     ///
     /// The buffer must not currently be in the RX queue, and no other references to it must exist
     /// between when this method is called and when it is popped from the queue.
-    unsafe fn add_buffer_to_queue(&mut self, index: u16, transport: &mut impl Transport) -> Result {
+    unsafe fn add_buffer_to_queue(&mut self, index: u16, transport: &impl Transport) -> Result {
         // SAFETY: The buffer lives as long as the queue, and the caller guarantees that it's not
         // currently in the queue or referred to anywhere else until it is popped.
         unsafe {
@@ -106,7 +106,7 @@ impl<H: Hal, const SIZE: usize, const BUFFER_SIZE: usize> OwningQueue<H, SIZE, B
     /// avoided.
     pub fn poll<T>(
         &mut self,
-        transport: &mut impl Transport,
+        transport: &impl Transport,
         handler: impl FnOnce(&[u8]) -> Result<Option<T>>,
     ) -> Result<Option<T>> {
         let Some((buffer, token)) = self.pop()? else {
