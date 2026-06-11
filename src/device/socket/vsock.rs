@@ -103,7 +103,7 @@ impl ConnectionInfo {
 }
 
 /// An event received from a VirtIO socket device.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct VsockEvent {
     /// The source of the event, i.e. the peer who sent it.
     pub source: VsockAddr,
@@ -113,6 +113,9 @@ pub struct VsockEvent {
     pub buffer_status: VsockBufferStatus,
     /// The type of event.
     pub event_type: VsockEventType,
+
+    /// The new connection, if this event is a connection request.
+    pub new_connection: Option<Connection>,
 }
 
 impl VsockEvent {
@@ -170,6 +173,7 @@ impl VsockEvent {
             destination,
             buffer_status,
             event_type,
+            new_connection: None,
         })
     }
 }

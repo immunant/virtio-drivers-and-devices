@@ -1,5 +1,5 @@
 use super::{
-    protocol::VsockAddr, vsock::ConnectionInfo, DisconnectReason, SocketError, VirtIOSocket,
+    protocol::VsockAddr, vsock::ConnectionInfo, SocketError, VirtIOSocket,
     VirtIOSocketDevice, VirtIOSocketManager, VsockEvent, VsockEventType, DEFAULT_RX_BUFFER_SIZE,
 };
 use crate::{
@@ -126,8 +126,9 @@ struct VsockConnectionManagerCommon<M: VirtIOSocketManager<L::Lock<Connection>>,
     inner: L::Lock<VsockConnectionManagerInner<L>>,
 }
 
+/// The state of a single vsock connection managed by a [`VsockConnectionManager`].
 #[derive(Debug)]
-pub(crate) struct Connection {
+pub struct Connection {
     pub(crate) info: ConnectionInfo,
     buffer: RingBuffer,
     /// The peer sent a SHUTDOWN request, but we haven't yet responded with a RST because there is
@@ -436,101 +437,53 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
         self.driver.send(buffer, connection)
     }
 
-    /// Polls the vsock device to receive data or other updates.
+    // Polls the vsock device to receive data or other updates.
     pub fn poll(&self) -> Result<Option<VsockEvent>> {
-        let mut inner = self.inner.lock();
         let local_cid = self.driver.local_cid();
-        let per_connection_buffer_capacity = inner.per_connection_buffer_capacity;
-
-        let result = self.driver.poll(|event, body| {
-            let connection = get_connection_for_event::<L>(&inner.connections, &event, local_cid);
-
-            // Skip events which don't match any connection we know about, unless they are a
-            // connection request.
-            let mut connection = if let Some((_, connection)) = connection {
-                connection
-            } else if let VsockEventType::ConnectionRequest = event.event_type {
-                // If the requested connection already exists or the CID isn't ours, ignore it.
-                if connection.is_some() || event.destination.cid != local_cid {
-                    return Ok(None);
-                }
-                drop(connection);
-                // Add the new connection to our list, at least for now. It will be removed again
-                // below if we weren't listening on the port.
-                inner.connections.push(L::Lock::new(Connection::new(
+        let per_connection_buffer_capacity = self.inner.lock().per_connection_buffer_capacity;
+        self.driver.poll(|mut event, body| {
+            if event.destination.cid != local_cid {
+                return Ok(None);
+            }
+            let inner_guard = self.inner.lock();
+            if !inner_guard
+                .listening_ports
+                .contains(&event.destination.port)
+            {
+                // TODO: Return reject connection action here instead
+                return Ok(None);
+            }
+            if event.event_type == VsockEventType::ConnectionRequest {
+                let mut c = Connection::new(
                     event.source,
                     event.destination.port,
                     per_connection_buffer_capacity,
-                )));
-                inner.connections.last_mut().unwrap().lock()
-            } else {
+                );
+                c.info.update_for_event(&event);
+                event.new_connection = Some(c);
+                // TODO: We deliberately do not add the connection to `inner.connections` until the
+                // caller accepts the connection. This means that if the peer follows up with a
+                // reset packet before the connection is accepted, it will be treated as an
+                // unknown connection.
+                return Ok(Some(event));
+            }
+            let existing_connection =
+                get_connection_for_event::<L>(&inner_guard.connections, &event, local_cid);
+            if existing_connection.is_none() {
                 return Ok(None);
-            };
-
-            // Update stored connection info.
-            connection.info.update_for_event(&event);
+            }
+            let mut existing_connection = existing_connection.unwrap().1;
+            existing_connection.info.update_for_event(&event);
 
             if let VsockEventType::Received { length } = event.event_type {
                 // Copy to buffer
-                if !connection.buffer.add(body) {
+                if !existing_connection.buffer.add(body) {
                     return Err(SocketError::OutputBufferTooShort(length).into());
                 }
             }
 
             Ok(Some(event))
-        })?;
-
-        let Some(event) = result else {
-            return Ok(None);
-        };
-
-        // The connection must exist because we found it above in the callback.
-        let (connection_index, mut connection) =
-            get_connection_for_event::<L>(&inner.connections, &event, local_cid).unwrap();
-
-        match event.event_type {
-            VsockEventType::ConnectionRequest => {
-                if inner.listening_ports.contains(&event.destination.port) {
-                    self.driver.accept(connection)?;
-                } else {
-                    // Reject the connection request and remove it from our list.
-                    self.driver.force_close(connection)?;
-                    inner.connections.swap_remove(connection_index);
-
-                    // No need to pass the request on to the client, as we've already rejected it.
-                    return Ok(None);
-                }
-            }
-            VsockEventType::Connected => {}
-            VsockEventType::Disconnected { reason } => {
-                // Wait until client reads all data before removing connection.
-                if connection.buffer.is_empty() {
-                    if reason == DisconnectReason::Shutdown {
-                        self.driver.force_close(connection)?;
-                    } else {
-                        // We need to drop `connection` before mutating the array.
-                        // `force_close` takes ownership of it on the other branch,
-                        // so we drop it explicitly here.
-                        drop(connection);
-                    }
-                    inner.connections.swap_remove(connection_index);
-                } else {
-                    connection.peer_requested_shutdown = true;
-                }
-            }
-            VsockEventType::Received { .. } => {
-                // Already copied the buffer in the callback above.
-            }
-            VsockEventType::CreditRequest => {
-                // If the peer requested credit, send an update.
-                self.driver.credit_update(connection)?;
-                // No need to pass the request on to the client, we've already handled it.
-                return Ok(None);
-            }
-            VsockEventType::CreditUpdate => {}
-        }
-
-        Ok(Some(event))
+        })
     }
 
     /// Returns the local CID of the vsock device.
