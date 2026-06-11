@@ -64,6 +64,7 @@ pub struct VsockDeviceConnectionManager<H: DeviceHal, T: DeviceTransport, L: Loc
 /// the device side must not call the connect method. These are equivalent to the inherent methods
 /// which are kept for backwards compatibility.
 pub trait VsockManager: Send + Sync {
+    fn accept(&self, c: Connection) -> Result;
     /// Sends a request to connect to the given destination on the driver side.
     ///
     /// This returns as soon as the request is sent; you should wait until `poll` returns a
@@ -177,6 +178,18 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
         self.0.local_cid()
     }
 
+    pub fn accept(&self, c: Connection) -> Result {
+        let info = c.info.clone();
+        // Adding the connection to the list before we call `accept` prevents a
+        // potential race where the peer could send follow-up packets before the
+        // connection gets added to the list.
+        self.0.inner.lock().connections.push(L::Lock::new(c));
+        let res = self.0.driver.accept(info);
+        if res.is_err() {
+            panic!("need to remove connection")
+        }
+        res
+    }
     /// Sends a request to connect to the given destination.
     ///
     /// This returns as soon as the request is sent; you should wait until `poll` returns a
@@ -291,6 +304,19 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockDeviceConnectionMana
         self.0.unlisten(port)
     }
 
+    pub fn accept(&self, c: Connection) -> Result {
+        let info = c.info.clone();
+        // Adding the connection to the list before we call `accept` prevents a
+        // potential race where the peer could send follow-up packets before the
+        // connection gets added to the list.
+        self.0.inner.lock().connections.push(L::Lock::new(c));
+        let res = self.0.driver.accept(info);
+        if res.is_err() {
+            panic!("need to remove connection")
+        }
+        res
+    }
+
     /// Sends the buffer to the destination.
     pub fn send(&self, destination: VsockAddr, src_port: u32, buffer: &[u8]) -> Result {
         self.0.send(destination, src_port, buffer)
@@ -343,6 +369,9 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockDeviceConnectionMana
 impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> VsockManager
     for VsockConnectionManager<H, T, L, RX_BUFFER_SIZE>
 {
+    fn accept(&self, c: Connection) -> Result {
+        Self::accept(self, c)
+    }
     fn connect(&self, destination: VsockAddr, src_port: u32) -> Result {
         Self::connect(self, destination, src_port)
     }
@@ -381,6 +410,9 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> VsockMan
 impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockManager
     for VsockDeviceConnectionManager<H, T, L>
 {
+    fn accept(&self, c: Connection) -> Result {
+        Self::accept(self, c)
+    }
     fn connect(&self, _destination: VsockAddr, _src_port: u32) -> Result {
         unreachable!("vsock devices should not make outgoing connections")
     }
