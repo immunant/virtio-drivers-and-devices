@@ -330,10 +330,7 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
     }
 
     /// Accepts the given connection from a peer.
-    pub(crate) fn accept(
-        &self,
-        connection: <L::Lock<Connection> as Lock<Connection>>::Guard<'_>,
-    ) -> Result {
+    pub fn accept(&self, connection: ConnectionInfo) -> Result {
         <Self as VirtIOSocketManager<L::Lock<Connection>>>::accept(self, connection)
     }
 
@@ -522,12 +519,11 @@ where
     ) -> Result<Option<VsockEvent>>;
 
     /// Accepts the given connection from a peer.
-    fn accept(&self, connection: L::Guard<'_>) -> Result {
+    fn accept(&self, info: ConnectionInfo) -> Result {
         let header = VirtioVsockHdr {
             op: VirtioVsockOp::Response.into(),
-            ..connection.info.new_header(self.local_cid())
+            ..info.new_header(self.local_cid())
         };
-        drop(connection);
         self.send_packet_to_queue(&header, &[])
     }
 
