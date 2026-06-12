@@ -87,6 +87,7 @@ pub trait VsockManager: Send + Sync {
 
     /// Polls the vsock device to receive data or other updates.
     fn poll(&self) -> Result<Option<VsockEvent>>;
+    fn poll_direct(&self) -> Result<Option<VsockEvent>>;
 
     /// Returns the local CID, i.e. the CID of the guest on the driver side and the CID of the host
     /// on the device side.
@@ -226,6 +227,10 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
         self.0.poll()
     }
 
+    pub fn poll_direct(&self) -> Result<Option<VsockEvent>> {
+        self.0.poll_direct()
+    }
+
     /// Reads data received from the given connection.
     pub fn recv(&self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
         self.0.recv(peer, src_port, buffer)
@@ -320,6 +325,10 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockDeviceConnectionMana
         self.0.poll()
     }
 
+    pub fn poll_direct(&self) -> Result<Option<VsockEvent>> {
+        self.0.poll_direct()
+    }
+
     /// Reads data received from the given connection.
     pub fn recv(&self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
         self.0.recv(peer, src_port, buffer)
@@ -383,6 +392,9 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> VsockMan
     fn poll(&self) -> Result<Option<VsockEvent>> {
         Self::poll(self)
     }
+    fn poll_direct(&self) -> Result<Option<VsockEvent>> {
+        Self::poll_direct(self)
+    }
     fn local_cid(&self) -> u64 {
         self.0.local_cid()
     }
@@ -421,6 +433,9 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockManager for VsockDev
     }
     fn poll(&self) -> Result<Option<VsockEvent>> {
         Self::poll(self)
+    }
+    fn poll_direct(&self) -> Result<Option<VsockEvent>> {
+        Self::poll_direct(self)
     }
     fn local_cid(&self) -> u64 {
         self.0.local_cid()
