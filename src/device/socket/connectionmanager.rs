@@ -1,5 +1,5 @@
 use super::{
-    protocol::VsockAddr, vsock::ConnectionInfo, SocketError, VirtIOSocket,
+    protocol::VsockAddr, vsock::ConnectionInfo, DisconnectReason, SocketError, VirtIOSocket,
     VirtIOSocketDevice, VirtIOSocketManager, VsockEvent, VsockEventType, DEFAULT_RX_BUFFER_SIZE,
 };
 use crate::{
@@ -64,6 +64,7 @@ pub struct VsockDeviceConnectionManager<H: DeviceHal, T: DeviceTransport, L: Loc
 /// the device side must not call the connect method. These are equivalent to the inherent methods
 /// which are kept for backwards compatibility.
 pub trait VsockManager: Send + Sync {
+    /// Accepts an incoming connection, registering it and acknowledging it to the peer.
     fn accept(&self, c: Connection) -> Result;
     /// Sends a request to connect to the given destination on the driver side.
     ///
@@ -86,6 +87,13 @@ pub trait VsockManager: Send + Sync {
 
     /// Polls the vsock device to receive data or other updates.
     fn poll(&self) -> Result<Option<VsockEvent>>;
+
+    /// Polls the vsock device, surfacing events directly to the caller without automatically
+    /// accepting or rejecting connections.
+    ///
+    /// Unlike [`poll`](Self::poll), an incoming `ConnectionRequest` is returned with its
+    /// `new_connection` populated so the caller can decide whether to [`accept`](Self::accept) it.
+    fn poll_direct(&self) -> Result<Option<VsockEvent>>;
 
     /// Returns the local CID, i.e. the CID of the guest on the driver side and the CID of the host
     /// on the device side.
@@ -178,6 +186,7 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
         self.0.local_cid()
     }
 
+    /// Accepts an incoming connection, registering it and acknowledging it to the peer.
     pub fn accept(&self, c: Connection) -> Result {
         let info = c.info.clone();
         // Adding the connection to the list before we call `accept` prevents a
@@ -231,6 +240,12 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
     /// Polls the vsock device to receive data or other updates.
     pub fn poll(&self) -> Result<Option<VsockEvent>> {
         self.0.poll()
+    }
+
+    /// Polls the vsock device, surfacing events directly to the caller without automatically
+    /// accepting or rejecting connections. See [`VsockManager::poll_direct`].
+    pub fn poll_direct(&self) -> Result<Option<VsockEvent>> {
+        self.0.poll_direct()
     }
 
     /// Reads data received from the given connection.
@@ -304,6 +319,7 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockDeviceConnectionMana
         self.0.unlisten(port)
     }
 
+    /// Accepts an incoming connection, registering it and acknowledging it to the peer.
     pub fn accept(&self, c: Connection) -> Result {
         let info = c.info.clone();
         // Adding the connection to the list before we call `accept` prevents a
@@ -325,6 +341,12 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockDeviceConnectionMana
     /// Polls the vsock device to receive data or other updates.
     pub fn poll(&self) -> Result<Option<VsockEvent>> {
         self.0.poll()
+    }
+
+    /// Polls the vsock device, surfacing events directly to the caller without automatically
+    /// accepting or rejecting connections. See [`VsockManager::poll_direct`].
+    pub fn poll_direct(&self) -> Result<Option<VsockEvent>> {
+        self.0.poll_direct()
     }
 
     /// Reads data received from the given connection.
@@ -390,6 +412,9 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> VsockMan
     fn poll(&self) -> Result<Option<VsockEvent>> {
         Self::poll(self)
     }
+    fn poll_direct(&self) -> Result<Option<VsockEvent>> {
+        Self::poll_direct(self)
+    }
     fn local_cid(&self) -> u64 {
         self.0.local_cid()
     }
@@ -430,6 +455,9 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockManager
     }
     fn poll(&self) -> Result<Option<VsockEvent>> {
         Self::poll(self)
+    }
+    fn poll_direct(&self) -> Result<Option<VsockEvent>> {
+        Self::poll_direct(self)
     }
     fn local_cid(&self) -> u64 {
         self.0.local_cid()
@@ -475,7 +503,7 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
         let per_connection_buffer_capacity = inner.per_connection_buffer_capacity;
 
         let result = self.driver.poll(|event, body| {
-            let connection = get_connection_for_event::<F>(&inner.connections, &event, local_cid);
+            let connection = get_connection_for_event::<L>(&inner.connections, &event, local_cid);
 
             // Skip events which don't match any connection we know about, unless they are a
             // connection request.
@@ -489,7 +517,7 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
                 drop(connection);
                 // Add the new connection to our list, at least for now. It will be removed again
                 // below if we weren't listening on the port.
-                inner.connections.push(F::Lock::new(Connection::new(
+                inner.connections.push(L::Lock::new(Connection::new(
                     event.source,
                     event.destination.port,
                     per_connection_buffer_capacity,
@@ -517,7 +545,7 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
         };
         // The connection must exist because we found it above in the callback.
         let (connection_index, mut connection) =
-            get_connection_for_event::<F>(&inner.connections, &event, local_cid).unwrap();
+            get_connection_for_event::<L>(&inner.connections, &event, local_cid).unwrap();
 
         match event.event_type {
             VsockEventType::ConnectionRequest => {
