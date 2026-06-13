@@ -629,14 +629,15 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
                 return Ok(None);
             }
             let inner_guard = self.inner.lock();
-            if !inner_guard
-                .listening_ports
-                .contains(&event.destination.port)
-            {
-                // TODO: Return reject connection action here instead
-                return Ok(None);
-            }
             if event.event_type == VsockEventType::ConnectionRequest {
+                if !inner_guard
+                    .listening_ports
+                    .contains(&event.destination.port)
+                {
+                    // TODO: Return reject connection action here instead
+                    return Ok(None);
+                }
+
                 let mut c = Connection::new(
                     event.source,
                     event.destination.port,
