@@ -110,6 +110,12 @@ pub trait VsockManager: Send + Sync {
     /// Reads data received from the given connection.
     fn recv(&self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize>;
 
+    /// Returns the number of bytes in the receive buffer available to be read by `recv`.
+    ///
+    /// When the available bytes is 0, it indicates that the receive buffer is empty and does not
+    /// contain any data.
+    fn recv_buffer_available_bytes(&self, peer: VsockAddr, src_port: u32) -> Result<usize>;
+
     /// Acknowledges an interrupt from the device.
     ///
     /// This is useful when you cannot soundly get a mutable reference to the VsockManager impl, such
@@ -450,6 +456,9 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> VsockMan
     fn recv(&self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
         Self::recv(self, peer, src_port, buffer)
     }
+    fn recv_buffer_available_bytes(&self, peer: VsockAddr, src_port: u32) -> Result<usize> {
+        Self::recv_buffer_available_bytes(self, peer, src_port)
+    }
     unsafe fn ack_interrupt(&self) -> InterruptStatus {
         let vsock_driver_ptr = (&raw const self.0.driver).cast_mut();
         // SAFETY: This function's safety requirements ensure that `self` points to a valid
@@ -493,6 +502,9 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockManager
     }
     fn recv(&self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
         Self::recv(self, peer, src_port, buffer)
+    }
+    fn recv_buffer_available_bytes(&self, peer: VsockAddr, src_port: u32) -> Result<usize> {
+        Self::recv_buffer_available_bytes(self, peer, src_port)
     }
     unsafe fn ack_interrupt(&self) -> InterruptStatus {
         panic!("vsock devices cannot acknowledge interrupts")
