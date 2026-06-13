@@ -608,6 +608,7 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
             if event.event_type == VsockEventType::ConnectionRequest {
                 let inner_guard = self.inner.lock();
                 if !inner_guard.listening_ports.contains(&event.destination.port) {
+                    // TODO: Return reject connection action here instead
                     return Ok(None);
                 }
 
