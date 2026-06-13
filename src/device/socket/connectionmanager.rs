@@ -6,7 +6,7 @@ use crate::{
     transport::{DeviceTransport, InterruptStatus, Transport},
     DeviceHal, Hal, Lock, LockFactory, Result,
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::cmp::min;
 use core::convert::TryInto;
 use core::hint::spin_loop;
@@ -126,11 +126,11 @@ pub trait VsockManager: Send + Sync {
 
 struct VsockConnectionManagerInner<L: LockFactory> {
     per_connection_buffer_capacity: u32,
-    connections: Vec<L::Lock<Connection>>,
+    connections: Vec<Arc<L::Lock<Connection>>>,
     listening_ports: Vec<u32>,
 }
 
-struct VsockConnectionManagerCommon<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory> {
+struct VsockConnectionManagerCommon<M: VirtIOSocketManager<L>, L: LockFactory> {
     driver: M,
     inner: L::Lock<VsockConnectionManagerInner<L>>,
 }
@@ -189,15 +189,23 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
     /// Accepts an incoming connection, registering it and acknowledging it to the peer.
     pub fn accept(&self, c: Connection) -> Result {
         let info = c.info.clone();
+        let new_connection = Arc::new(L::Lock::new(c));
         // Adding the connection to the list before we call `accept` prevents a
         // potential race where the peer could send follow-up packets before the
         // connection gets added to the list.
-        self.0.inner.lock().connections.push(L::Lock::new(c));
-        let res = self.0.driver.accept(info);
-        if res.is_err() {
-            panic!("need to remove connection")
+        self.0.inner.lock().connections.push(new_connection.clone());
+        if let Err(e) = self.0.driver.accept(info) {
+            // We unlocked inner so connections could have changed. Remove newly
+            // inserted connection via lookup rather than by possibly-stale idx.
+            // TODO: Use slotmap or similar to avoid inefficient, linear search.
+            self.0
+                .inner
+                .lock()
+                .connections
+                .retain(|c| !Arc::ptr_eq(c, &new_connection));
+            return Err(e);
         }
-        res
+        Ok(())
     }
     /// Sends a request to connect to the given destination.
     ///
@@ -215,11 +223,22 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
 
         let new_connection =
             Connection::new(destination, src_port, inner.per_connection_buffer_capacity);
-        let new_connection = L::Lock::new(new_connection);
+        let new_connection = Arc::new(L::Lock::new(new_connection));
+        inner.connections.push(new_connection.clone());
+        drop(inner);
 
-        self.0.driver.connect(new_connection.lock())?;
+        if let Err(e) = self.0.driver.connect(new_connection.clone()) {
+            // We unlocked inner so connections could have changed. Remove newly
+            // inserted connection via lookup rather than by possibly-stale idx.
+            // TODO: Use slotmap or similar to avoid inefficient, linear search.
+            self.0
+                .inner
+                .lock()
+                .connections
+                .retain(|c| !Arc::ptr_eq(c, &new_connection));
+            return Err(e);
+        }
         debug!("Connection requested: {:?}", new_connection.lock().info);
-        inner.connections.push(new_connection);
         Ok(())
     }
     /// Allows incoming connections on the given port number.
@@ -322,15 +341,22 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockDeviceConnectionMana
     /// Accepts an incoming connection, registering it and acknowledging it to the peer.
     pub fn accept(&self, c: Connection) -> Result {
         let info = c.info.clone();
+        let new_connection = Arc::new(L::Lock::new(c));
         // Adding the connection to the list before we call `accept` prevents a
         // potential race where the peer could send follow-up packets before the
         // connection gets added to the list.
-        self.0.inner.lock().connections.push(L::Lock::new(c));
-        let res = self.0.driver.accept(info);
-        if res.is_err() {
-            panic!("need to remove connection")
+        self.0.inner.lock().connections.push(new_connection.clone());
+        if let Err(e) = <_ as VirtIOSocketManager<L>>::accept(&self.0.driver, info) {
+            // We unlocked inner so connections could have changed. Remove newly
+            // inserted connection via lookup rather than by possibly-stale idx.
+            self.0
+                .inner
+                .lock()
+                .connections
+                .retain(|c| !Arc::ptr_eq(c, &new_connection));
+            return Err(e);
         }
-        res
+        Ok(())
     }
 
     /// Sends the buffer to the destination.
@@ -473,9 +499,7 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockManager
     }
 }
 
-impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
-    VsockConnectionManagerCommon<M, L>
-{
+impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, L> {
     /// Allows incoming connections on the given port number.
     pub fn listen(&self, port: u32) {
         let mut inner = self.inner.lock();
@@ -493,6 +517,7 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
     pub fn send(&self, destination: VsockAddr, src_port: u32, buffer: &[u8]) -> Result {
         let inner = self.inner.lock();
         let (_, connection) = get_connection::<L>(&inner.connections, destination, src_port)?;
+        drop(inner);
 
         self.driver.send(buffer, connection)
     }
@@ -507,26 +532,27 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
 
             // Skip events which don't match any connection we know about, unless they are a
             // connection request.
-            let mut connection = if let Some((_, connection)) = connection {
+            let connection = if let Some((_, connection)) = connection {
                 connection
             } else if let VsockEventType::ConnectionRequest = event.event_type {
                 // If the requested connection already exists or the CID isn't ours, ignore it.
                 if connection.is_some() || event.destination.cid != local_cid {
                     return Ok(None);
                 }
-                drop(connection);
                 // Add the new connection to our list, at least for now. It will be removed again
                 // below if we weren't listening on the port.
-                inner.connections.push(L::Lock::new(Connection::new(
+                let new_connection = Arc::new(L::Lock::new(Connection::new(
                     event.source,
                     event.destination.port,
                     per_connection_buffer_capacity,
                 )));
-                inner.connections.last_mut().unwrap().lock()
+                inner.connections.push(new_connection.clone());
+                new_connection
             } else {
                 return Ok(None);
             };
 
+            let mut connection = connection.lock();
             // Update stored connection info.
             connection.info.update_for_event(&event);
 
@@ -544,17 +570,20 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
             return Ok(None);
         };
         // The connection must exist because we found it above in the callback.
-        let (connection_index, mut connection) =
+        let (connection_index, connection) =
             get_connection_for_event::<L>(&inner.connections, &event, local_cid).unwrap();
 
         match event.event_type {
             VsockEventType::ConnectionRequest => {
                 if inner.listening_ports.contains(&event.destination.port) {
-                    self.driver.accept(connection.info.clone())?;
+                    drop(inner);
+                    self.driver.accept(connection.lock().info.clone())?;
                 } else {
+                    inner.connections.swap_remove(connection_index);
+                    drop(inner);
+
                     // Reject the connection request and remove it from our list.
                     self.driver.force_close(connection)?;
-                    inner.connections.swap_remove(connection_index);
 
                     // No need to pass the request on to the client, as we've already rejected it.
                     return Ok(None);
@@ -563,24 +592,24 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
             VsockEventType::Connected => {}
             VsockEventType::Disconnected { reason } => {
                 // Wait until client reads all data before removing connection.
-                if connection.buffer.is_empty() {
+                let mut connection_guard = connection.lock();
+                if connection_guard.buffer.is_empty() {
+                    inner.connections.swap_remove(connection_index);
+                    drop(connection_guard);
+                    drop(inner);
+
                     if reason == DisconnectReason::Shutdown {
                         self.driver.force_close(connection)?;
-                    } else {
-                        // We need to drop `connection` before mutating the array.
-                        // `force_close` takes ownership of it on the other branch,
-                        // so we drop it explicitly here.
-                        drop(connection);
                     }
-                    inner.connections.swap_remove(connection_index);
                 } else {
-                    connection.peer_requested_shutdown = true;
+                    connection_guard.peer_requested_shutdown = true;
                 }
             }
             VsockEventType::Received { .. } => {
                 // Already copied the buffer in the callback above.
             }
             VsockEventType::CreditRequest => {
+                drop(inner);
                 // If the peer requested credit, send an update.
                 self.driver.credit_update(connection)?;
                 // No need to pass the request on to the client, we've already handled it.
@@ -622,12 +651,14 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
                 // unknown connection.
                 return Ok(Some(event));
             }
-            let existing_connection =
-                get_connection_for_event::<L>(&inner_guard.connections, &event, local_cid);
-            if existing_connection.is_none() {
+            let Some((_, existing_connection)) =
+                get_connection_for_event::<L>(&inner_guard.connections, &event, local_cid)
+            else {
                 return Ok(None);
-            }
-            let mut existing_connection = existing_connection.unwrap().1;
+            };
+            drop(inner_guard);
+
+            let mut existing_connection = existing_connection.lock();
             existing_connection.info.update_for_event(&event);
 
             if let VsockEventType::Received { length } = event.event_type {
@@ -649,19 +680,23 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
     /// Reads data received from the given connection.
     pub fn recv(&self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
         let mut inner = self.inner.lock();
-        let (connection_index, mut connection) =
+        let (connection_index, connection) =
             get_connection::<L>(&inner.connections, peer, src_port)?;
 
+        let mut connection_guard = connection.lock();
         // Copy from ring buffer
-        let bytes_read = connection.buffer.drain(buffer);
+        let bytes_read = connection_guard.buffer.drain(buffer);
 
-        connection.info.done_forwarding(bytes_read);
+        connection_guard.info.done_forwarding(bytes_read);
 
         // If buffer is now empty and the peer requested shutdown, finish shutting down the
         // connection.
-        if connection.peer_requested_shutdown && connection.buffer.is_empty() {
-            self.driver.force_close(connection)?;
+        if connection_guard.peer_requested_shutdown && connection_guard.buffer.is_empty() {
             inner.connections.swap_remove(connection_index);
+            drop(connection_guard);
+            drop(inner);
+
+            self.driver.force_close(connection)?;
         }
 
         Ok(bytes_read)
@@ -674,6 +709,7 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
     pub fn recv_buffer_available_bytes(&self, peer: VsockAddr, src_port: u32) -> Result<usize> {
         let inner = self.inner.lock();
         let (_, connection) = get_connection::<L>(&inner.connections, peer, src_port)?;
+        let connection = connection.lock();
         Ok(connection.buffer.used())
     }
 
@@ -681,6 +717,8 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
     pub fn update_credit(&self, peer: VsockAddr, src_port: u32) -> Result {
         let inner = self.inner.lock();
         let (_, connection) = get_connection::<L>(&inner.connections, peer, src_port)?;
+        drop(inner);
+
         self.driver.credit_update(connection)
     }
 
@@ -704,6 +742,7 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
     pub fn shutdown(&self, destination: VsockAddr, src_port: u32) -> Result {
         let inner = self.inner.lock();
         let (_, connection) = get_connection::<L>(&inner.connections, destination, src_port)?;
+        drop(inner);
 
         self.driver.shutdown(connection)
     }
@@ -712,10 +751,11 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
     pub fn force_close(&self, destination: VsockAddr, src_port: u32) -> Result {
         let mut inner = self.inner.lock();
         let (index, connection) = get_connection::<L>(&inner.connections, destination, src_port)?;
+        inner.connections.swap_remove(index);
+        drop(inner);
 
         self.driver.force_close(connection)?;
 
-        inner.connections.swap_remove(index);
         Ok(())
     }
 }
@@ -724,12 +764,11 @@ impl<M: VirtIOSocketManager<L::Lock<Connection>>, L: LockFactory>
 /// its index.
 ///
 /// Returns `Err(SocketError::NotConnected)` if there is no matching connection in the list.
-fn get_connection<'a, L: LockFactory>(
-    connections: &'a [L::Lock<Connection>],
+fn get_connection<L: LockFactory>(
+    connections: &[Arc<L::Lock<Connection>>],
     peer: VsockAddr,
     local_port: u32,
-) -> core::result::Result<(usize, <L::Lock<Connection> as Lock<Connection>>::Guard<'a>), SocketError>
-{
+) -> core::result::Result<(usize, Arc<L::Lock<Connection>>), SocketError> {
     connections
         .iter()
         .enumerate()
@@ -737,21 +776,21 @@ fn get_connection<'a, L: LockFactory>(
             let connection = connection.lock();
             connection.info.dst == peer && connection.info.src_port == local_port
         })
-        .map(|(idx, l)| (idx, l.lock()))
+        .map(|(idx, connection)| (idx, Arc::clone(connection)))
         .ok_or(SocketError::NotConnected)
 }
 
 /// Returns the connection from the given list matching the event, if any, and its index.
-fn get_connection_for_event<'a, L: LockFactory>(
-    connections: &'a [L::Lock<Connection>],
+fn get_connection_for_event<L: LockFactory>(
+    connections: &[Arc<L::Lock<Connection>>],
     event: &VsockEvent,
     local_cid: u64,
-) -> Option<(usize, <L::Lock<Connection> as Lock<Connection>>::Guard<'a>)> {
+) -> Option<(usize, Arc<L::Lock<Connection>>)> {
     connections
         .iter()
         .enumerate()
         .find(|(_, connection)| event.matches_connection(&connection.lock().info, local_cid))
-        .map(|(idx, l)| (idx, l.lock()))
+        .map(|(idx, connection)| (idx, Arc::clone(connection)))
 }
 
 #[derive(Debug)]
