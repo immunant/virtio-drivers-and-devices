@@ -624,7 +624,6 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
     // Polls the vsock device to receive data or other updates.
     pub fn poll_direct(&self) -> Result<Option<VsockEvent>> {
         let local_cid = self.driver.local_cid();
-        let per_connection_buffer_capacity = self.inner.lock().per_connection_buffer_capacity;
         self.driver.poll(|mut event, body| {
             if event.destination.cid != local_cid {
                 return Ok(None);
@@ -641,7 +640,7 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
                 let mut c = Connection::new(
                     event.source,
                     event.destination.port,
-                    per_connection_buffer_capacity,
+                    inner_guard.per_connection_buffer_capacity,
                 );
                 c.info.update_for_event(&event);
                 event.new_connection = Some(c);
