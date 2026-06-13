@@ -601,17 +601,17 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
     // Polls the vsock device to receive data or other updates.
     pub fn poll_direct(&self) -> Result<Option<VsockEvent>> {
         let local_cid = self.driver.local_cid();
-        let per_connection_buffer_capacity = self.inner.lock().per_connection_buffer_capacity;
         self.driver.poll(|mut event, body| {
             if event.destination.cid != local_cid {
                 return Ok(None);
             }
             if event.event_type == VsockEventType::ConnectionRequest {
-                if !self.inner.lock().listening_ports.contains(&event.destination.port) {
+                let inner_guard = self.inner.lock();
+                if !inner_guard.listening_ports.contains(&event.destination.port) {
                     return Ok(None);
                 }
 
-                let mut c = Connection::new(event.source, event.destination.port, per_connection_buffer_capacity);
+                let mut c = Connection::new(event.source, event.destination.port, inner_guard.per_connection_buffer_capacity);
                 c.info.update_for_event(&event);
                 event.new_connection = Some(c);
                 // TODO: We deliberately do add the connection to `inner.connections` until the
