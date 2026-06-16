@@ -617,8 +617,8 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
             if event.destination.cid != local_cid {
                 return Ok(None);
             }
+            let mut inner_guard = self.inner.lock();
             if event.event_type == VsockEventType::ConnectionRequest {
-                let inner_guard = self.inner.lock();
                 if !inner_guard.listening_ports.contains(&event.destination.port) {
                     // TODO: Return reject connection action here instead
                     return Ok(None);
@@ -633,9 +633,15 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
                 // unknown connection.
                 return Ok(Some(event));
             }
-            let Some((_, connection)) = get_connection_for_event::<L>(&self.inner.lock().connections, &event, local_cid) else {
+            let Some((connection_index, connection)) = get_connection_for_event::<L>(&inner_guard.connections, &event, local_cid) else {
                 return Ok(None);
             };
+            if let VsockEventType::Disconnected { reason: DisconnectReason::Reset } = event.event_type {
+                // Remove the connection immediately
+                inner_guard.connections.swap_remove(connection_index);
+                return Ok(Some(event));
+            }
+            drop(inner_guard);
 
             let mut connection = connection.lock();
             connection.info.update_for_event(&event);
