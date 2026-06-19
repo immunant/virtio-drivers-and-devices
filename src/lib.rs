@@ -144,6 +144,43 @@ pub trait LockFactory {
         T: Send;
 }
 
+/// A [`Lock`] backed by a [`spin::mutex::SpinMutex`].
+#[cfg(feature = "spin")]
+pub struct SpinLock<T>(spin::mutex::SpinMutex<T>);
+
+#[cfg(feature = "spin")]
+impl<T: Send> Lock<T> for SpinLock<T> {
+    type Guard<'a>
+        = spin::mutex::SpinMutexGuard<'a, T>
+    where
+        Self: 'a,
+        T: 'a;
+
+    fn new(data: T) -> Self {
+        Self(spin::mutex::SpinMutex::new(data))
+    }
+
+    fn lock(&self) -> Self::Guard<'_> {
+        self.0.lock()
+    }
+
+    fn data_ptr(&self) -> *mut T {
+        self.0.as_mut_ptr()
+    }
+}
+
+/// A [`LockFactory`] which produces [`SpinLock`]s.
+#[cfg(feature = "spin")]
+pub struct SpinLockFactory;
+
+#[cfg(feature = "spin")]
+impl LockFactory for SpinLockFactory {
+    type Lock<T>
+        = SpinLock<T>
+    where
+        T: Send;
+}
+
 /// Align `size` up to a page.
 fn align_up(size: usize) -> usize {
     (size + PAGE_SIZE) & !(PAGE_SIZE - 1)

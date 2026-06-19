@@ -45,6 +45,7 @@ use virtio_drivers_and_devices::{
         },
         DeviceType, Transport,
     },
+    SpinLockFactory,
 };
 
 /// Base memory-mapped address of the primary PL011 UART device.
@@ -231,8 +232,9 @@ fn virtio_console<T: Transport>(transport: T) {
 }
 
 fn virtio_socket<T: Transport>(transport: T) -> virtio_drivers_and_devices::Result<()> {
-    let mut socket = VsockConnectionManager::new(
-        VirtIOSocket::<HalImpl, T>::new(transport).expect("Failed to create socket driver"),
+    let socket = VsockConnectionManager::new(
+        VirtIOSocket::<HalImpl, T, SpinLockFactory>::new(transport)
+            .expect("Failed to create socket driver"),
     );
     let port = 1221;
     let host_address = VsockAddr {
