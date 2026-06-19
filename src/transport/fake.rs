@@ -28,7 +28,7 @@ pub struct FakeTransport<C> {
     pub state: Arc<Mutex<State<C>>>,
 }
 
-impl<C: FromBytes + Immutable + IntoBytes> DeviceTransport for FakeTransport<C> {
+impl<C: FromBytes + Immutable + IntoBytes + Send> DeviceTransport for FakeTransport<C> {
     fn get_client_id(&self) -> u16 {
         0
     }
@@ -54,7 +54,7 @@ impl<C: FromBytes + Immutable + IntoBytes> DeviceTransport for FakeTransport<C> 
     }
 }
 
-impl<C: FromBytes + Immutable + IntoBytes> Transport for FakeTransport<C> {
+impl<C: FromBytes + Immutable + IntoBytes + Send> Transport for FakeTransport<C> {
     fn device_type(&self) -> DeviceType {
         self.device_type
     }
