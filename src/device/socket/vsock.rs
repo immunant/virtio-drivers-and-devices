@@ -633,7 +633,7 @@ fn read_header_and_body(buffer: &[u8]) -> Result<(VirtioVsockHdr, &[u8])> {
     Ok((header, data))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "spin"))]
 mod tests {
     use super::*;
     use crate::{
@@ -643,6 +643,7 @@ mod tests {
             fake::{FakeTransport, QueueStatus, State},
             DeviceType,
         },
+        SpinLockFactory,
     };
     use alloc::{sync::Arc, vec};
     use std::sync::Mutex;
@@ -668,7 +669,10 @@ mod tests {
             state: state.clone(),
         };
         let socket =
-            VirtIOSocket::<FakeHal, FakeTransport<VirtioVsockConfig>>::new(transport).unwrap();
+            VirtIOSocket::<FakeHal, FakeTransport<VirtioVsockConfig>, SpinLockFactory>::new(
+                transport,
+            )
+            .unwrap();
         assert_eq!(socket.guest_cid(), 0x00_0000_0042);
     }
 }

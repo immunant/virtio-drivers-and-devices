@@ -25,12 +25,12 @@ const DEFAULT_PER_CONNECTION_BUFFER_CAPACITY: u32 = 1024;
 /// # Example
 ///
 /// ```
-/// # use virtio_drivers_and_devices::{Error, Hal};
+/// # use virtio_drivers_and_devices::{Error, Hal, LockFactory};
 /// # use virtio_drivers_and_devices::transport::Transport;
 /// use virtio_drivers_and_devices::device::socket::{VirtIOSocket, VsockAddr, VsockConnectionManager};
 ///
-/// # fn example<HalImpl: Hal, T: Transport>(transport: T) -> Result<(), Error> {
-/// let mut socket = VsockConnectionManager::new(VirtIOSocket::<HalImpl, _, _>::new(transport)?);
+/// # fn example<HalImpl: Hal, T: Transport, L: LockFactory>(transport: T) -> Result<(), Error> {
+/// let mut socket = VsockConnectionManager::new(VirtIOSocket::<HalImpl, _, L>::new(transport)?);
 ///
 /// // Start a thread to call `socket.poll()` and handle events.
 ///
@@ -891,7 +891,7 @@ impl RingBuffer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "spin"))]
 mod tests {
     use super::*;
     use crate::{
@@ -907,6 +907,7 @@ mod tests {
             fake::{FakeTransport, QueueStatus, State},
             DeviceType,
         },
+        SpinLockFactory,
     };
     use alloc::{sync::Arc, vec};
     use core::mem::size_of;
@@ -945,7 +946,10 @@ mod tests {
             state: state.clone(),
         };
         let mut socket = VsockConnectionManager::new(
-            VirtIOSocket::<FakeHal, FakeTransport<VirtioVsockConfig>>::new(transport).unwrap(),
+            VirtIOSocket::<FakeHal, FakeTransport<VirtioVsockConfig>, SpinLockFactory>::new(
+                transport,
+            )
+            .unwrap(),
         );
 
         // Start a thread to simulate the device.
@@ -1076,19 +1080,21 @@ mod tests {
         });
 
         socket.connect(host_address, guest_port).unwrap();
+        let event = socket.wait_for_event().unwrap();
+        assert_eq!(event.source, host_address);
         assert_eq!(
-            socket.wait_for_event().unwrap(),
-            VsockEvent {
-                source: host_address,
-                destination: VsockAddr {
-                    cid: guest_cid,
-                    port: guest_port,
-                },
-                event_type: VsockEventType::Connected,
-                buffer_status: VsockBufferStatus {
-                    buffer_allocation: 50,
-                    forward_count: 0,
-                },
+            event.destination,
+            VsockAddr {
+                cid: guest_cid,
+                port: guest_port,
+            }
+        );
+        assert_eq!(event.event_type, VsockEventType::Connected);
+        assert_eq!(
+            event.buffer_status,
+            VsockBufferStatus {
+                buffer_allocation: 50,
+                forward_count: 0,
             }
         );
         println!("Guest sending");
@@ -1096,21 +1102,26 @@ mod tests {
             .send(host_address, guest_port, "Hello from guest".as_bytes())
             .unwrap();
         println!("Guest waiting to receive.");
+        let event = socket.wait_for_event().unwrap();
+        assert_eq!(event.source, host_address);
         assert_eq!(
-            socket.wait_for_event().unwrap(),
-            VsockEvent {
-                source: host_address,
-                destination: VsockAddr {
-                    cid: guest_cid,
-                    port: guest_port,
-                },
-                event_type: VsockEventType::Received {
-                    length: hello_from_host.len()
-                },
-                buffer_status: VsockBufferStatus {
-                    buffer_allocation: 50,
-                    forward_count: hello_from_guest.len() as u32,
-                },
+            event.destination,
+            VsockAddr {
+                cid: guest_cid,
+                port: guest_port,
+            }
+        );
+        assert_eq!(
+            event.event_type,
+            VsockEventType::Received {
+                length: hello_from_host.len()
+            }
+        );
+        assert_eq!(
+            event.buffer_status,
+            VsockBufferStatus {
+                buffer_allocation: 50,
+                forward_count: hello_from_guest.len() as u32,
             }
         );
         println!("Guest getting received data.");
@@ -1159,7 +1170,10 @@ mod tests {
             state: state.clone(),
         };
         let mut socket = VsockConnectionManager::new(
-            VirtIOSocket::<FakeHal, FakeTransport<VirtioVsockConfig>>::new(transport).unwrap(),
+            VirtIOSocket::<FakeHal, FakeTransport<VirtioVsockConfig>, SpinLockFactory>::new(
+                transport,
+            )
+            .unwrap(),
         );
 
         socket.listen(guest_port);
@@ -1261,19 +1275,21 @@ mod tests {
 
         // Expect an incoming connection.
         println!("Guest expecting incoming connection.");
+        let event = socket.wait_for_event().unwrap();
+        assert_eq!(event.source, host_address);
         assert_eq!(
-            socket.wait_for_event().unwrap(),
-            VsockEvent {
-                source: host_address,
-                destination: VsockAddr {
-                    cid: guest_cid,
-                    port: guest_port,
-                },
-                event_type: VsockEventType::ConnectionRequest,
-                buffer_status: VsockBufferStatus {
-                    buffer_allocation: 50,
-                    forward_count: 0,
-                },
+            event.destination,
+            VsockAddr {
+                cid: guest_cid,
+                port: guest_port,
+            }
+        );
+        assert_eq!(event.event_type, VsockEventType::ConnectionRequest);
+        assert_eq!(
+            event.buffer_status,
+            VsockBufferStatus {
+                buffer_allocation: 50,
+                forward_count: 0,
             }
         );
 
