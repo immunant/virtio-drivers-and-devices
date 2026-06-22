@@ -79,6 +79,10 @@ pub fn virtio_device_type(device_function_info: &DeviceFunctionInfo) -> Option<D
     None
 }
 
+/// Number of queues whose `queue_notify_off` is cached so `notify` avoids a racy select-then-read.
+/// Queues beyond this fall back to reading the offset on each call.
+pub(crate) const NOTIFY_OFFSET_CACHE_LEN: usize = 16;
+
 /// PCI transport for VirtIO.
 ///
 /// Ref: 4.1 Virtio Over PCI Bus
@@ -92,6 +96,8 @@ pub struct PciTransport {
     /// The start of the queue notification region within some BAR.
     notify_region: NonNull<[WriteOnly<u16>]>,
     notify_off_multiplier: u32,
+    /// Cached `queue_notify_off` values indexed by queue, populated in `queue_set`.
+    notify_offsets: [u16; NOTIFY_OFFSET_CACHE_LEN],
     /// The ISR status register within some BAR.
     isr_status: NonNull<Volatile<u8>>,
     /// The VirtIO device-specific configuration within some BAR.
@@ -200,6 +206,7 @@ impl PciTransport {
             common_cfg,
             notify_region,
             notify_off_multiplier,
+            notify_offsets: [0; NOTIFY_OFFSET_CACHE_LEN],
             isr_status,
             config_space,
         })
@@ -248,15 +255,21 @@ impl Transport for PciTransport {
     }
 
     fn notify(&self, queue: u16) {
-        // SAFETY: The common config and notify region pointers are valid and we checked in
-        // `get_bar_region` that they were aligned.
-        unsafe {
-            volwrite!(self.common_cfg, queue_select, queue);
-            // TODO: Consider caching this somewhere (per queue).
-            let queue_notify_off = volread!(self.common_cfg, queue_notify_off);
+        let queue_notify_off = match self.notify_offsets.get(usize::from(queue)) {
+            Some(&offset) => offset,
+            // SAFETY: The common config pointer is valid and we checked in `get_bar_region` that it
+            // was aligned.
+            None => unsafe {
+                volwrite!(self.common_cfg, queue_select, queue);
+                volread!(self.common_cfg, queue_notify_off)
+            },
+        };
 
-            let offset_bytes = usize::from(queue_notify_off) * self.notify_off_multiplier as usize;
-            let index = offset_bytes / size_of::<u16>();
+        let offset_bytes = usize::from(queue_notify_off) * self.notify_off_multiplier as usize;
+        let index = offset_bytes / size_of::<u16>();
+        // SAFETY: The notify region pointer is valid and we checked in `get_bar_region` that it was
+        // aligned.
+        unsafe {
             (&raw mut (*self.notify_region.as_ptr())[index]).vwrite(queue);
         }
     }
@@ -301,6 +314,12 @@ impl Transport for PciTransport {
             volwrite!(self.common_cfg, queue_driver, driver_area as u64);
             volwrite!(self.common_cfg, queue_device, device_area as u64);
             volwrite!(self.common_cfg, queue_enable, 1);
+        }
+
+        if let Some(slot) = self.notify_offsets.get_mut(usize::from(queue)) {
+            // SAFETY: The common config pointer is valid and aligned, and `queue` is still selected
+            // from the writes above.
+            *slot = unsafe { volread!(self.common_cfg, queue_notify_off) };
         }
     }
 

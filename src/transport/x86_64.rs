@@ -8,8 +8,8 @@ use super::{
         bus::{ConfigurationAccess, DeviceFunction, PciRoot, PCI_CAP_ID_VNDR},
         device_type, CommonCfg, VirtioCapabilityInfo, VirtioPciError, CAP_BAR_OFFSET,
         CAP_BAR_OFFSET_OFFSET, CAP_LENGTH_OFFSET, CAP_NOTIFY_OFF_MULTIPLIER_OFFSET,
-        VIRTIO_PCI_CAP_COMMON_CFG, VIRTIO_PCI_CAP_DEVICE_CFG, VIRTIO_PCI_CAP_ISR_CFG,
-        VIRTIO_PCI_CAP_NOTIFY_CFG, VIRTIO_VENDOR_ID,
+        NOTIFY_OFFSET_CACHE_LEN, VIRTIO_PCI_CAP_COMMON_CFG, VIRTIO_PCI_CAP_DEVICE_CFG,
+        VIRTIO_PCI_CAP_ISR_CFG, VIRTIO_PCI_CAP_NOTIFY_CFG, VIRTIO_VENDOR_ID,
     },
     DeviceStatus, DeviceType, Transport,
 };
@@ -41,6 +41,8 @@ pub struct HypPciTransport {
     /// The start of the queue notification region within some BAR.
     notify_region: HypIoRegion,
     notify_off_multiplier: u32,
+    /// Cached `queue_notify_off` values indexed by queue, populated in `queue_set`.
+    notify_offsets: [u16; NOTIFY_OFFSET_CACHE_LEN],
     /// The ISR status register within some BAR.
     isr_status: HypIoRegion,
     /// The VirtIO device-specific configuration within some BAR.
@@ -147,6 +149,7 @@ impl HypPciTransport {
             common_cfg,
             notify_region,
             notify_off_multiplier,
+            notify_offsets: [0; NOTIFY_OFFSET_CACHE_LEN],
             isr_status,
             config_space,
         })
@@ -184,9 +187,13 @@ impl Transport for HypPciTransport {
     }
 
     fn notify(&self, queue: u16) {
-        configwrite!(self.common_cfg, queue_select, queue);
-        // TODO: Consider caching this somewhere (per queue).
-        let queue_notify_off: u16 = configread!(self.common_cfg, queue_notify_off);
+        let queue_notify_off = match self.notify_offsets.get(usize::from(queue)) {
+            Some(&offset) => offset,
+            None => {
+                configwrite!(self.common_cfg, queue_select, queue);
+                configread!(self.common_cfg, queue_notify_off)
+            }
+        };
 
         let offset_bytes = usize::from(queue_notify_off) * self.notify_off_multiplier as usize;
         self.notify_region.write(offset_bytes, queue);
@@ -223,6 +230,10 @@ impl Transport for HypPciTransport {
         configwrite!(self.common_cfg, queue_driver, driver_area as u64);
         configwrite!(self.common_cfg, queue_device, device_area as u64);
         configwrite!(self.common_cfg, queue_enable, 1u16);
+
+        if let Some(slot) = self.notify_offsets.get_mut(usize::from(queue)) {
+            *slot = configread!(self.common_cfg, queue_notify_off);
+        }
     }
 
     fn queue_unset(&mut self, _queue: u16) {
