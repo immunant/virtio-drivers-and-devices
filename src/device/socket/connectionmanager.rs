@@ -122,12 +122,17 @@ pub trait VsockManager: Send + Sync {
     /// as from an interrupt handler. It may only be called on the driver side as it will panic if
     /// called on the device side.
     ///
+    /// This takes a raw `*mut Self` rather than `&self` because acknowledging the interrupt mutates
+    /// the underlying transport, which is a plain field, not behind an `UnsafeCell` or a lock.
+    /// Writing through a pointer derived from a shared `&self` reference to such a field is undefined
+    /// behavior regardless of runtime exclusivity, so the caller must supply a pointer whose
+    /// provenance permits the write.
+    ///
     /// # Safety
     ///
-    /// The implementation may acknowledge the interrupt through a raw pointer derived from `&self`,
-    /// mutating the underlying transport. The caller must ensure that no other references to the
-    /// driver or its transport are concurrently active for the duration of this call.
-    unsafe fn ack_interrupt(&self) -> InterruptStatus;
+    /// `ptr` must point to an initialized VsockManager impl which is ready to acknowledge interrupts,
+    /// and no other references to it or its transport may be active for the duration of the call.
+    unsafe fn ack_interrupt(ptr: *mut Self) -> InterruptStatus;
 }
 
 struct VsockConnectionManagerInner<L: LockFactory> {
@@ -457,10 +462,11 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> VsockMan
     fn recv_buffer_available_bytes(&self, peer: VsockAddr, src_port: u32) -> Result<usize> {
         Self::recv_buffer_available_bytes(self, peer, src_port)
     }
-    unsafe fn ack_interrupt(&self) -> InterruptStatus {
-        let vsock_driver_ptr = (&raw const self.0.driver).cast_mut();
-        // SAFETY: This function's safety requirements ensure that `self` points to a valid
+    unsafe fn ack_interrupt(ptr: *mut Self) -> InterruptStatus {
+        // SAFETY: This function's safety requirements ensure that `ptr` points to a valid
         // VsockConnectionManager so this gives a valid pointer to the field.
+        let vsock_driver_ptr = unsafe { &raw mut (*ptr).0.driver };
+        // SAFETY: delegated to the caller.
         unsafe { VirtIOSocket::<H, T, L, RX_BUFFER_SIZE>::ack_interrupt(vsock_driver_ptr) }
     }
 }
@@ -504,7 +510,7 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockManager
     fn recv_buffer_available_bytes(&self, peer: VsockAddr, src_port: u32) -> Result<usize> {
         Self::recv_buffer_available_bytes(self, peer, src_port)
     }
-    unsafe fn ack_interrupt(&self) -> InterruptStatus {
+    unsafe fn ack_interrupt(_ptr: *mut Self) -> InterruptStatus {
         panic!("vsock devices cannot acknowledge interrupts")
     }
 }
@@ -634,7 +640,9 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
     // Polls the vsock device to receive data or other updates.
     pub fn poll_direct(&self) -> Result<Option<VsockEvent>> {
         let local_cid = self.driver.local_cid();
-        self.driver.poll(|mut event, body| {
+        // Reset sent after poll returns, since the RX queue lock is held in the callback.
+        let mut reject_info: Option<ConnectionInfo> = None;
+        let result = self.driver.poll(|mut event, body| {
             if event.destination.cid != local_cid {
                 return Ok(None);
             }
@@ -644,7 +652,7 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
                     .listening_ports
                     .contains(&event.destination.port)
                 {
-                    // TODO: Return reject connection action here instead
+                    reject_info = Some(ConnectionInfo::new(event.source, event.destination.port));
                     return Ok(None);
                 }
 
@@ -687,7 +695,13 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
             }
 
             Ok(Some(event))
-        })
+        })?;
+
+        if let Some(info) = reject_info {
+            self.driver.reject(info)?;
+            return Ok(None);
+        }
+        Ok(result)
     }
 
     /// Returns the local CID of the vsock device.
@@ -697,9 +711,8 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
 
     /// Reads data received from the given connection.
     pub fn recv(&self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
-        let mut inner = self.inner.lock();
-        let (connection_index, connection) =
-            get_connection::<L>(&inner.connections, peer, src_port)?;
+        let inner = self.inner.lock();
+        let (_, connection) = get_connection::<L>(&inner.connections, peer, src_port)?;
 
         let mut connection_guard = connection.lock();
         // Copy from ring buffer
@@ -710,11 +723,15 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
         // If buffer is now empty and the peer requested shutdown, finish shutting down the
         // connection.
         if connection_guard.peer_requested_shutdown && connection_guard.buffer.is_empty() {
-            inner.connections.swap_remove(connection_index);
             drop(connection_guard);
             drop(inner);
 
-            self.driver.force_close(connection)?;
+            self.driver.force_close(Arc::clone(&connection))?;
+
+            self.inner
+                .lock()
+                .connections
+                .retain(|c| !Arc::ptr_eq(c, &connection));
         }
 
         Ok(bytes_read)
@@ -767,12 +784,17 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
 
     /// Forcibly closes the connection without waiting for the peer.
     pub fn force_close(&self, destination: VsockAddr, src_port: u32) -> Result {
-        let mut inner = self.inner.lock();
-        let (index, connection) = get_connection::<L>(&inner.connections, destination, src_port)?;
-        inner.connections.swap_remove(index);
-        drop(inner);
+        let connection = {
+            let inner = self.inner.lock();
+            get_connection::<L>(&inner.connections, destination, src_port)?.1
+        };
 
-        self.driver.force_close(connection)?;
+        self.driver.force_close(Arc::clone(&connection))?;
+
+        self.inner
+            .lock()
+            .connections
+            .retain(|c| !Arc::ptr_eq(c, &connection));
 
         Ok(())
     }

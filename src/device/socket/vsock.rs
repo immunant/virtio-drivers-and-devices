@@ -506,6 +506,15 @@ pub trait VirtIOSocketManager<L: LockFactory>: Send {
         self.send_packet_to_queue(&header, &[])
     }
 
+    /// Rejects an incoming connection request from a peer by sending a reset.
+    fn reject(&self, info: ConnectionInfo) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::Rst.into(),
+            ..info.new_header(self.local_cid())
+        };
+        self.send_packet_to_queue(&header, &[])
+    }
+
     /// Requests the peer to send us a credit update for the given connection.
     fn request_credit(&self, connection: Arc<L::Lock<Connection>>) -> Result {
         let connection = connection.lock();
@@ -520,40 +529,31 @@ pub trait VirtIOSocketManager<L: LockFactory>: Send {
 
     /// Sends the buffer to the destination.
     fn send(&self, buffer: &[u8], connection: Arc<L::Lock<Connection>>) -> Result {
-        let connection = self.check_peer_buffer_is_sufficient(connection, buffer.len())?;
-
-        let mut connection = connection.lock();
         let len = buffer.len() as u32;
-        let header = VirtioVsockHdr {
-            op: VirtioVsockOp::Rw.into(),
-            len: len.into(),
-            ..connection.info.new_header(self.local_cid())
-        };
-        connection.info.tx_cnt += len;
-        drop(connection);
-
-        self.send_packet_to_queue(&header, buffer)
-    }
-
-    fn check_peer_buffer_is_sufficient<'a>(
-        &self,
-        connection: Arc<L::Lock<Connection>>,
-        buffer_len: usize,
-    ) -> Result<Arc<L::Lock<Connection>>> {
         let mut connection_guard = connection.lock();
-        if connection_guard.info.peer_free() as usize >= buffer_len {
-            drop(connection_guard);
-            Ok(connection)
-        } else {
+        if (connection_guard.info.peer_free() as usize) < buffer.len() {
             // Request an update of the cached peer credit, if we haven't already done so, and tell
             // the caller to try again later.
             if !connection_guard.info.has_pending_credit_request {
                 connection_guard.info.has_pending_credit_request = true;
                 drop(connection_guard);
-                self.request_credit(connection)?;
+                if let Err(e) = self.request_credit(connection.clone()) {
+                    connection.lock().info.has_pending_credit_request = false;
+                    return Err(e);
+                }
             }
-            Err(SocketError::InsufficientBufferSpaceInPeer.into())
+            return Err(SocketError::InsufficientBufferSpaceInPeer.into());
         }
+
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::Rw.into(),
+            len: len.into(),
+            ..connection_guard.info.new_header(self.local_cid())
+        };
+        connection_guard.info.tx_cnt += len;
+        drop(connection_guard);
+
+        self.send_packet_to_queue(&header, buffer)
     }
 
     /// Tells the peer how much buffer space we have to receive data.
