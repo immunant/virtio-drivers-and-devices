@@ -711,9 +711,8 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
 
     /// Reads data received from the given connection.
     pub fn recv(&self, peer: VsockAddr, src_port: u32, buffer: &mut [u8]) -> Result<usize> {
-        let mut inner = self.inner.lock();
-        let (connection_index, connection) =
-            get_connection::<L>(&inner.connections, peer, src_port)?;
+        let inner = self.inner.lock();
+        let (_, connection) = get_connection::<L>(&inner.connections, peer, src_port)?;
 
         let mut connection_guard = connection.lock();
         // Copy from ring buffer
@@ -724,11 +723,15 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
         // If buffer is now empty and the peer requested shutdown, finish shutting down the
         // connection.
         if connection_guard.peer_requested_shutdown && connection_guard.buffer.is_empty() {
-            inner.connections.swap_remove(connection_index);
             drop(connection_guard);
             drop(inner);
 
-            self.driver.force_close(connection)?;
+            self.driver.force_close(Arc::clone(&connection))?;
+
+            self.inner
+                .lock()
+                .connections
+                .retain(|c| !Arc::ptr_eq(c, &connection));
         }
 
         Ok(bytes_read)
@@ -781,12 +784,17 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
 
     /// Forcibly closes the connection without waiting for the peer.
     pub fn force_close(&self, destination: VsockAddr, src_port: u32) -> Result {
-        let mut inner = self.inner.lock();
-        let (index, connection) = get_connection::<L>(&inner.connections, destination, src_port)?;
-        inner.connections.swap_remove(index);
-        drop(inner);
+        let connection = {
+            let inner = self.inner.lock();
+            get_connection::<L>(&inner.connections, destination, src_port)?.1
+        };
 
-        self.driver.force_close(connection)?;
+        self.driver.force_close(Arc::clone(&connection))?;
+
+        self.inner
+            .lock()
+            .connections
+            .retain(|c| !Arc::ptr_eq(c, &connection));
 
         Ok(())
     }
