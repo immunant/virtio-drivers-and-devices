@@ -537,7 +537,10 @@ pub trait VirtIOSocketManager<L: LockFactory>: Send {
             if !connection_guard.info.has_pending_credit_request {
                 connection_guard.info.has_pending_credit_request = true;
                 drop(connection_guard);
-                self.request_credit(connection)?;
+                if let Err(e) = self.request_credit(connection.clone()) {
+                    connection.lock().info.has_pending_credit_request = false;
+                    return Err(e);
+                }
             }
             return Err(SocketError::InsufficientBufferSpaceInPeer.into());
         }
