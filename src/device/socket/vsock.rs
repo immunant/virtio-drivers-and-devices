@@ -506,6 +506,15 @@ pub trait VirtIOSocketManager<L: LockFactory>: Send {
         self.send_packet_to_queue(&header, &[])
     }
 
+    /// Rejects an incoming connection request from a peer by sending a reset.
+    fn reject(&self, info: ConnectionInfo) -> Result {
+        let header = VirtioVsockHdr {
+            op: VirtioVsockOp::Rst.into(),
+            ..info.new_header(self.local_cid())
+        };
+        self.send_packet_to_queue(&header, &[])
+    }
+
     /// Requests the peer to send us a credit update for the given connection.
     fn request_credit(&self, connection: Arc<L::Lock<Connection>>) -> Result {
         let connection = connection.lock();

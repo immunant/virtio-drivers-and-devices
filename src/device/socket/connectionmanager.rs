@@ -634,7 +634,9 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
     // Polls the vsock device to receive data or other updates.
     pub fn poll_direct(&self) -> Result<Option<VsockEvent>> {
         let local_cid = self.driver.local_cid();
-        self.driver.poll(|mut event, body| {
+        // Reset sent after poll returns, since the RX queue lock is held in the callback.
+        let mut reject_info: Option<ConnectionInfo> = None;
+        let result = self.driver.poll(|mut event, body| {
             if event.destination.cid != local_cid {
                 return Ok(None);
             }
@@ -644,7 +646,7 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
                     .listening_ports
                     .contains(&event.destination.port)
                 {
-                    // TODO: Return reject connection action here instead
+                    reject_info = Some(ConnectionInfo::new(event.source, event.destination.port));
                     return Ok(None);
                 }
 
@@ -687,7 +689,13 @@ impl<M: VirtIOSocketManager<L>, L: LockFactory> VsockConnectionManagerCommon<M, 
             }
 
             Ok(Some(event))
-        })
+        })?;
+
+        if let Some(info) = reject_info {
+            self.driver.reject(info)?;
+            return Ok(None);
+        }
+        Ok(result)
     }
 
     /// Returns the local CID of the vsock device.
