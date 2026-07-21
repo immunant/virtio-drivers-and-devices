@@ -22,7 +22,6 @@ pub(crate) const RX_QUEUE_IDX: u16 = 0;
 pub(crate) const TX_QUEUE_IDX: u16 = 1;
 const EVENT_QUEUE_IDX: u16 = 2;
 
-pub(crate) const QUEUE_SIZE: usize = 8;
 const SUPPORTED_FEATURES: Feature = Feature::RING_EVENT_IDX
     .union(Feature::RING_INDIRECT_DESC)
     .union(Feature::VERSION_1);
@@ -229,21 +228,22 @@ pub struct VirtIOSocket<
     H: Hal,
     T: Transport,
     L: LockFactory,
+    const QUEUE_SIZE: usize,
     const RX_BUFFER_SIZE: usize = DEFAULT_RX_BUFFER_SIZE,
 > {
     transport: T,
     /// Virtqueue to receive packets.
     rx: L::Lock<OwningQueue<H, QUEUE_SIZE, RX_BUFFER_SIZE>>,
-    tx: L::Lock<VirtQueue<H, { QUEUE_SIZE }>>,
+    tx: L::Lock<VirtQueue<H, QUEUE_SIZE>>,
     /// Virtqueue to receive events from the device.
-    event: L::Lock<VirtQueue<H, { QUEUE_SIZE }>>,
+    event: L::Lock<VirtQueue<H, QUEUE_SIZE>>,
     /// The guest_cid field contains the guest’s context ID, which uniquely identifies
     /// the device for its lifetime. The upper 32 bits of the CID are reserved and zeroed.
     guest_cid: u64,
 }
 
-impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> Drop
-    for VirtIOSocket<H, T, L, RX_BUFFER_SIZE>
+impl<H: Hal, T: Transport, L: LockFactory, const QUEUE_SIZE: usize, const RX_BUFFER_SIZE: usize> Drop
+    for VirtIOSocket<H, T, L, QUEUE_SIZE, RX_BUFFER_SIZE>
 {
     fn drop(&mut self) {
         // Clear any pointers pointing to DMA regions, so the device doesn't try to access them
@@ -254,8 +254,8 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> Drop
     }
 }
 
-impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
-    VirtIOSocket<H, T, L, RX_BUFFER_SIZE>
+impl<H: Hal, T: Transport, L: LockFactory, const QUEUE_SIZE: usize, const RX_BUFFER_SIZE: usize>
+    VirtIOSocket<H, T, L, QUEUE_SIZE, RX_BUFFER_SIZE>
 {
     /// Create a new VirtIO Vsock driver.
     pub fn new(mut transport: T) -> Result<Self> {
@@ -418,8 +418,8 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
     }
 }
 
-impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> VirtIOSocketManager<L>
-    for VirtIOSocket<H, T, L, RX_BUFFER_SIZE>
+impl<H: Hal, T: Transport, L: LockFactory, const QUEUE_SIZE: usize, const RX_BUFFER_SIZE: usize> VirtIOSocketManager<L>
+    for VirtIOSocket<H, T, L, QUEUE_SIZE, RX_BUFFER_SIZE>
 {
     fn local_cid(&self) -> u64 {
         self.guest_cid()
@@ -439,14 +439,14 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> VirtIOSo
 }
 
 /// A low-level interface for a vsock device implementation
-pub struct VirtIOSocketDevice<H: DeviceHal, T: DeviceTransport, L: LockFactory> {
+pub struct VirtIOSocketDevice<H: DeviceHal, T: DeviceTransport, L: LockFactory, const QUEUE_SIZE: usize> {
     transport: T,
-    rx: L::Lock<DeviceVirtQueue<H, { QUEUE_SIZE }>>,
-    tx: L::Lock<DeviceVirtQueue<H, { QUEUE_SIZE }>>,
-    event: L::Lock<DeviceVirtQueue<H, { QUEUE_SIZE }>>,
+    rx: L::Lock<DeviceVirtQueue<H, QUEUE_SIZE>>,
+    tx: L::Lock<DeviceVirtQueue<H, QUEUE_SIZE>>,
+    event: L::Lock<DeviceVirtQueue<H, QUEUE_SIZE>>,
 }
 
-impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VirtIOSocketDevice<H, T, L> {
+impl<H: DeviceHal, T: DeviceTransport, L: LockFactory, const QUEUE_SIZE: usize> VirtIOSocketDevice<H, T, L, QUEUE_SIZE> {
     /// Create a new VirtIO Vsock device.
     pub fn new(mut transport: T) -> Result<Self> {
         let rx = DeviceVirtQueue::new(&mut transport, RX_QUEUE_IDX)?;
@@ -461,8 +461,8 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VirtIOSocketDevice<H, T, 
     }
 }
 
-impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VirtIOSocketManager<L>
-    for VirtIOSocketDevice<H, T, L>
+impl<H: DeviceHal, T: DeviceTransport, L: LockFactory, const QUEUE_SIZE: usize> VirtIOSocketManager<L>
+    for VirtIOSocketDevice<H, T, L, QUEUE_SIZE>
 {
     fn local_cid(&self) -> u64 {
         VMADDR_CID_HOST

@@ -30,7 +30,7 @@ const DEFAULT_PER_CONNECTION_BUFFER_CAPACITY: u32 = 1024;
 /// use virtio_drivers_and_devices::device::socket::{VirtIOSocket, VsockAddr, VsockConnectionManager};
 ///
 /// # fn example<HalImpl: Hal, T: Transport, L: LockFactory>(transport: T) -> Result<(), Error> {
-/// let mut socket = VsockConnectionManager::new(VirtIOSocket::<HalImpl, _, L>::new(transport)?);
+/// let mut socket = VsockConnectionManager::new(VirtIOSocket::<HalImpl, _, L, 256>::new(transport)?);
 ///
 /// // Start a thread to call `socket.poll()` and handle events.
 ///
@@ -50,12 +50,13 @@ pub struct VsockConnectionManager<
     H: Hal,
     T: Transport,
     L: LockFactory,
+    const QUEUE_SIZE: usize,
     const RX_BUFFER_SIZE: usize = DEFAULT_RX_BUFFER_SIZE,
->(VsockConnectionManagerCommon<VirtIOSocket<H, T, L, RX_BUFFER_SIZE>, L>);
+>(VsockConnectionManagerCommon<VirtIOSocket<H, T, L, QUEUE_SIZE, RX_BUFFER_SIZE>, L>);
 
 /// A high level interface for VirtIO socket (vsock) devices.
-pub struct VsockDeviceConnectionManager<H: DeviceHal, T: DeviceTransport, L: LockFactory>(
-    VsockConnectionManagerCommon<VirtIOSocketDevice<H, T, L>, L>,
+pub struct VsockDeviceConnectionManager<H: DeviceHal, T: DeviceTransport, L: LockFactory, const QUEUE_SIZE: usize>(
+    VsockConnectionManagerCommon<VirtIOSocketDevice<H, T, L, QUEUE_SIZE>, L>,
 );
 
 /// A trait defining shared behavior for VirtIO socket devices and drivers.
@@ -163,18 +164,18 @@ impl Connection {
     }
 }
 
-impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
-    VsockConnectionManager<H, T, L, RX_BUFFER_SIZE>
+impl<H: Hal, T: Transport, L: LockFactory, const QUEUE_SIZE: usize, const RX_BUFFER_SIZE: usize>
+    VsockConnectionManager<H, T, L, QUEUE_SIZE, RX_BUFFER_SIZE>
 {
     /// Construct a new connection manager wrapping the given low-level VirtIO socket driver.
-    pub fn new(driver: VirtIOSocket<H, T, L, RX_BUFFER_SIZE>) -> Self {
+    pub fn new(driver: VirtIOSocket<H, T, L, QUEUE_SIZE, RX_BUFFER_SIZE>) -> Self {
         Self::new_with_capacity(driver, DEFAULT_PER_CONNECTION_BUFFER_CAPACITY)
     }
 
     /// Construct a new connection manager wrapping the given low-level VirtIO socket driver, with
     /// the given per-connection buffer capacity.
     pub fn new_with_capacity(
-        driver: VirtIOSocket<H, T, L, RX_BUFFER_SIZE>,
+        driver: VirtIOSocket<H, T, L, QUEUE_SIZE, RX_BUFFER_SIZE>,
         per_connection_buffer_capacity: u32,
     ) -> Self {
         Self(VsockConnectionManagerCommon {
@@ -312,16 +313,16 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
     }
 }
 
-impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockDeviceConnectionManager<H, T, L> {
+impl<H: DeviceHal, T: DeviceTransport, L: LockFactory, const QUEUE_SIZE: usize> VsockDeviceConnectionManager<H, T, L, QUEUE_SIZE> {
     /// Construct a new connection manager wrapping the given low-level VirtIO socket driver.
-    pub fn new(driver: VirtIOSocketDevice<H, T, L>) -> Self {
+    pub fn new(driver: VirtIOSocketDevice<H, T, L, QUEUE_SIZE>) -> Self {
         Self::new_with_capacity(driver, DEFAULT_PER_CONNECTION_BUFFER_CAPACITY)
     }
 
     /// Construct a new connection manager wrapping the given low-level VirtIO socket driver, with
     /// the given per-connection buffer capacity.
     pub fn new_with_capacity(
-        driver: VirtIOSocketDevice<H, T, L>,
+        driver: VirtIOSocketDevice<H, T, L, QUEUE_SIZE>,
         per_connection_buffer_capacity: u32,
     ) -> Self {
         Self(VsockConnectionManagerCommon {
@@ -420,8 +421,8 @@ impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockDeviceConnectionMana
     }
 }
 
-impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> VsockManager
-    for VsockConnectionManager<H, T, L, RX_BUFFER_SIZE>
+impl<H: Hal, T: Transport, L: LockFactory, const QUEUE_SIZE: usize, const RX_BUFFER_SIZE: usize> VsockManager
+    for VsockConnectionManager<H, T, L, QUEUE_SIZE, RX_BUFFER_SIZE>
 {
     fn accept(&self, c: Connection) -> Result {
         Self::accept(self, c)
@@ -463,12 +464,12 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> VsockMan
         let vsock_driver_ptr = (&raw const self.0.driver).cast_mut();
         // SAFETY: This function's safety requirements ensure that `self` points to a valid
         // VsockConnectionManager so this gives a valid pointer to the field.
-        unsafe { VirtIOSocket::<H, T, L, RX_BUFFER_SIZE>::ack_interrupt(vsock_driver_ptr) }
+        unsafe { VirtIOSocket::<H, T, L, QUEUE_SIZE, RX_BUFFER_SIZE>::ack_interrupt(vsock_driver_ptr) }
     }
 }
 
-impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VsockManager
-    for VsockDeviceConnectionManager<H, T, L>
+impl<H: DeviceHal, T: DeviceTransport, L: LockFactory, const QUEUE_SIZE: usize> VsockManager
+    for VsockDeviceConnectionManager<H, T, L, QUEUE_SIZE>
 {
     fn accept(&self, c: Connection) -> Result {
         Self::accept(self, c)
