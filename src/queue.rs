@@ -629,7 +629,7 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
         #[allow(clippy::let_unit_value)]
         let _ = Self::SIZE_OK;
 
-        if transport.max_queue_size(idx) < SIZE as u32 {
+        if transport.max_queue_size(idx) != SIZE as u32 {
             return Err(Error::InvalidParam);
         }
         let client_id = transport.get_client_id();
