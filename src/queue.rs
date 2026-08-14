@@ -109,9 +109,9 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
         let desc =
             nonnull_slice_from_raw_parts(layout.descriptors_vaddr().cast::<Descriptor>(), SIZE);
         // SAFETY: avail ring memory was allocated in `layout` with the correct size.
-        let avail = unsafe { AvailRing::new(layout.avail_vaddr(), SIZE) };
+        let avail = unsafe { AvailRing::new(layout.avail_vaddr(), size) };
         // SAFETY: used ring memory was allocated in `layout` with the correct size.
-        let used = unsafe { UsedRing::new(layout.used_vaddr(), SIZE) };
+        let used = unsafe { UsedRing::new(layout.used_vaddr(), size) };
 
         let mut desc_shadow: Box<[Descriptor]> =
             <[Descriptor]>::new_box_zeroed_with_elems(SIZE).unwrap();
@@ -1189,7 +1189,7 @@ impl AvailRing {
     /// `base` must point to valid, properly aligned memory for an avail ring
     /// with `queue_size` entries, laid out as specified in virtio 2.7.6:
     /// `le16 flags`, `le16 idx`, `le16 ring[queue_size]`, `le16 used_event`.
-    unsafe fn new(base: NonNull<u8>, queue_size: usize) -> Self {
+    unsafe fn new(base: NonNull<u8>, queue_size: u16) -> Self {
         // Layout (virtio spec 2.7.6):
         //   le16 flags        (offset 0)
         //   le16 idx          (offset 2)
@@ -1203,10 +1203,14 @@ impl AvailRing {
                 ring: nonnull_slice_from_raw_parts(
                     NonNull::new(base.as_ptr().add(4).cast::<u16>())
                         .expect("avail ring ring pointer is null"),
-                    queue_size,
+                    usize::from(queue_size),
                 ),
-                used_event: NonNull::new(base.as_ptr().add(4 + queue_size * 2).cast::<AtomicU16>())
-                    .expect("avail ring used_event pointer is null"),
+                used_event: NonNull::new(
+                    base.as_ptr()
+                        .add(4 + usize::from(queue_size) * 2)
+                        .cast::<AtomicU16>(),
+                )
+                .expect("avail ring used_event pointer is null"),
             }
         }
     }
@@ -1236,7 +1240,7 @@ impl UsedRing {
     /// `base` must point to valid, properly aligned memory for a used ring
     /// with `queue_size` entries, laid out as specified in virtio 2.7.8:
     /// `le16 flags`, `le16 idx`, `virtq_used_elem ring[queue_size]`, `le16 avail_event`.
-    unsafe fn new(base: NonNull<u8>, queue_size: usize) -> Self {
+    unsafe fn new(base: NonNull<u8>, queue_size: u16) -> Self {
         // Layout (virtio spec 2.7.8):
         //   le16 flags                      (offset 0)
         //   le16 idx                        (offset 2)
@@ -1250,11 +1254,11 @@ impl UsedRing {
                 ring: nonnull_slice_from_raw_parts(
                     NonNull::new(base.as_ptr().add(4).cast::<UsedElem>())
                         .expect("used ring ring pointer is null"),
-                    queue_size,
+                    usize::from(queue_size),
                 ),
                 avail_event: NonNull::new(
                     base.as_ptr()
-                        .add(4 + queue_size * size_of::<UsedElem>())
+                        .add(4 + usize::from(queue_size) * size_of::<UsedElem>())
                         .cast::<AtomicU16>(),
                 )
                 .expect("used ring avail_event pointer is null"),
@@ -1330,7 +1334,7 @@ pub(crate) fn fake_read_write_queue<const QUEUE_SIZE: usize>(
     let available_ring = unsafe {
         AvailRing::new(
             NonNull::new(queue_driver_area as *mut u8).expect("queue_driver_area is null"),
-            QUEUE_SIZE,
+            QUEUE_SIZE as u16,
         )
     };
     // SAFETY: queue_device_area points to a valid used ring with QUEUE_SIZE entries shared by
@@ -1338,7 +1342,7 @@ pub(crate) fn fake_read_write_queue<const QUEUE_SIZE: usize>(
     let used_ring = unsafe {
         UsedRing::new(
             NonNull::new(queue_device_area.cast::<u8>()).expect("queue_device_area is null"),
-            QUEUE_SIZE,
+            QUEUE_SIZE as u16,
         )
     };
 
