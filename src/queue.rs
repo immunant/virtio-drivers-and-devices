@@ -1,6 +1,5 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-#[cfg(feature = "alloc")]
 pub mod owning;
 
 use crate::hal::{BufferDirection, DeviceDma, DeviceHal, Dma, DmaMemory, Hal, PhysAddr};
@@ -58,9 +57,7 @@ pub struct VirtQueue<H: Hal> {
     last_used_idx: u16,
     /// Whether the `VIRTIO_F_EVENT_IDX` feature has been negotiated.
     event_idx: bool,
-    #[cfg(feature = "alloc")]
     indirect: bool,
-    #[cfg(feature = "alloc")]
     indirect_lists: Box<[Option<NonNull<[Descriptor]>>]>,
 }
 
@@ -138,9 +135,7 @@ impl<H: Hal> VirtQueue<H> {
             avail_idx: 0,
             last_used_idx: 0,
             event_idx,
-            #[cfg(feature = "alloc")]
             indirect,
-            #[cfg(feature = "alloc")]
             indirect_lists: vec![None; usize::from(size)].into_boxed_slice(),
         })
     }
@@ -164,9 +159,6 @@ impl<H: Hal> VirtQueue<H> {
             return Err(Error::InvalidParam);
         }
         let descriptors_needed = inputs.len() + outputs.len();
-        // Only consider indirect descriptors if the alloc feature is enabled, as they require
-        // allocation.
-        #[cfg(feature = "alloc")]
         if self.num_used as usize + 1 > usize::from(self.size)
             || descriptors_needed > usize::from(self.size)
             || (!self.indirect
@@ -174,19 +166,12 @@ impl<H: Hal> VirtQueue<H> {
         {
             return Err(Error::QueueFull);
         }
-        #[cfg(not(feature = "alloc"))]
-        if self.num_used as usize + descriptors_needed > usize::from(self.size) {
-            return Err(Error::QueueFull);
-        }
 
-        #[cfg(feature = "alloc")]
         let head = if self.indirect && descriptors_needed > 1 {
             self.add_indirect(inputs, outputs)
         } else {
             self.add_direct(inputs, outputs)
         };
-        #[cfg(not(feature = "alloc"))]
-        let head = self.add_direct(inputs, outputs);
 
         let avail_slot = self.avail_idx & (self.size - 1);
         // SAFETY: `self.avail.ring` points to a properly aligned, dereferenceable,
@@ -246,7 +231,6 @@ impl<H: Hal> VirtQueue<H> {
         head
     }
 
-    #[cfg(feature = "alloc")]
     fn add_indirect<'a, 'b>(
         &mut self,
         inputs: &'a [&'b [u8]],
@@ -392,7 +376,6 @@ impl<H: Hal> VirtQueue<H> {
 
     /// Returns the number of free descriptors.
     pub fn available_desc(&self) -> usize {
-        #[cfg(feature = "alloc")]
         if self.indirect {
             return if self.num_used == self.size {
                 0
@@ -425,7 +408,6 @@ impl<H: Hal> VirtQueue<H> {
 
         let head_desc = &mut self.desc_shadow[usize::from(head)];
         if head_desc.flags.contains(DescFlags::INDIRECT) {
-            #[cfg(feature = "alloc")]
             {
                 // Find the indirect descriptor list, unshare it and move its descriptor to the free
                 // list.
@@ -592,7 +574,6 @@ impl<H: DeviceHal> MappedDescriptor<H> {
     }
 }
 
-#[cfg(feature = "alloc")]
 #[derive(Debug)]
 struct DescriptorBuffers<'a> {
     read_buffers: Vec<&'a [u8]>,
@@ -669,46 +650,41 @@ impl<H: DeviceHal> DeviceVirtQueue<H> {
         inputs: &[&[u8]],
         transport: &impl DeviceTransport,
     ) -> Result<()> {
-        #[cfg(feature = "alloc")]
-        {
-            while !self.can_pop() {
-                spin_loop();
-            }
-            // SAFETY: inputs is copied into the first write buffer then they are returned to the
-            // used vring and not accessed again. This function waits until it can pop the avail
-            // vring so this should never panic
-            let mut popped = unsafe { self.pop_avail()?.unwrap() };
-
-            // If there isn't at least one write buffer, the device isn't ready
-            if popped.write_buffers.is_empty() {
-                return Err(Error::NotReady);
-            }
-
-            // A mix of write and read buffers is currently not supported
-            // TODO: Support popping chains of mixed descriptors by caching any read buffers popped
-            // here.
-            if !popped.read_buffers.is_empty() {
-                return Err(Error::Unsupported);
-            }
-
-            let out_buf = &mut popped.write_buffers[0];
-            let mut copied = 0;
-            for in_buf in inputs {
-                out_buf[copied..copied + in_buf.len()].copy_from_slice(in_buf);
-                copied += in_buf.len();
-            }
-
-            let head_len = copied;
-            // Return the entire popped chain by writing the head to the used vring
-            self.add_used(popped.head, head_len);
-
-            if self.should_notify() {
-                transport.notify(self.queue_idx);
-            }
-            Ok(())
+        while !self.can_pop() {
+            spin_loop();
         }
-        #[cfg(not(feature = "alloc"))]
-        unreachable!("device virtqueue send loop requires alloc feature")
+        // SAFETY: inputs is copied into the first write buffer then they are returned to the
+        // used vring and not accessed again. This function waits until it can pop the avail
+        // vring so this should never panic
+        let mut popped = unsafe { self.pop_avail()?.unwrap() };
+
+        // If there isn't at least one write buffer, the device isn't ready
+        if popped.write_buffers.is_empty() {
+            return Err(Error::NotReady);
+        }
+
+        // A mix of write and read buffers is currently not supported
+        // TODO: Support popping chains of mixed descriptors by caching any read buffers popped
+        // here.
+        if !popped.read_buffers.is_empty() {
+            return Err(Error::Unsupported);
+        }
+
+        let out_buf = &mut popped.write_buffers[0];
+        let mut copied = 0;
+        for in_buf in inputs {
+            out_buf[copied..copied + in_buf.len()].copy_from_slice(in_buf);
+            copied += in_buf.len();
+        }
+
+        let head_len = copied;
+        // Return the entire popped chain by writing the head to the used vring
+        self.add_used(popped.head, head_len);
+
+        if self.should_notify() {
+            transport.notify(self.queue_idx);
+        }
+        Ok(())
     }
 
     pub fn poll<T>(
@@ -716,41 +692,36 @@ impl<H: DeviceHal> DeviceVirtQueue<H> {
         transport: &impl DeviceTransport,
         handler: impl FnOnce(&[u8]) -> Result<Option<T>>,
     ) -> Result<Option<T>> {
-        #[cfg(feature = "alloc")]
-        {
-            // TODO: Store any popped write buffers to avoid potential deadlocks caused by mixed
-            // descriptor chains.
-            // SAFETY: The buffers are copied to a single temporary buffer. Then handler is called
-            // on that and the original buffers are returned to the used vring and not accessed again.
-            let Some(popped) = (unsafe { self.pop_avail()? }) else {
-                return Ok(None);
-            };
+        // TODO: Store any popped write buffers to avoid potential deadlocks caused by mixed
+        // descriptor chains.
+        // SAFETY: The buffers are copied to a single temporary buffer. Then handler is called
+        // on that and the original buffers are returned to the used vring and not accessed again.
+        let Some(popped) = (unsafe { self.pop_avail()? }) else {
+            return Ok(None);
+        };
 
-            // A mix of write and read buffers is currently not supported
-            // TODO: Support popping chains of mixed descriptors by caching any write buffers popped
-            // here.
-            if !popped.write_buffers.is_empty() {
-                return Err(Error::Unsupported);
-            }
-
-            let mut tmp = Vec::new();
-            for in_buf in &popped.read_buffers {
-                tmp.extend_from_slice(in_buf);
-            }
-            let result = handler(tmp.as_slice());
-
-            self.add_used(
-                popped.head,
-                0, /* zero bytes were written to the write buffers */
-            );
-
-            if self.should_notify() {
-                transport.notify(self.queue_idx);
-            }
-            result
+        // A mix of write and read buffers is currently not supported
+        // TODO: Support popping chains of mixed descriptors by caching any write buffers popped
+        // here.
+        if !popped.write_buffers.is_empty() {
+            return Err(Error::Unsupported);
         }
-        #[cfg(not(feature = "alloc"))]
-        unreachable!("device virtqueue polling requires alloc feature")
+
+        let mut tmp = Vec::new();
+        for in_buf in &popped.read_buffers {
+            tmp.extend_from_slice(in_buf);
+        }
+        let result = handler(tmp.as_slice());
+
+        self.add_used(
+            popped.head,
+            0, /* zero bytes were written to the write buffers */
+        );
+
+        if self.should_notify() {
+            transport.notify(self.queue_idx);
+        }
+        result
     }
 
     fn add_used(&mut self, head: u16, head_len: usize) {
@@ -786,7 +757,6 @@ impl<H: DeviceHal> DeviceVirtQueue<H> {
     ///
     /// The caller must ensure that the returned buffers are not accessed after the first buffer's
     /// token has been written to the used vring and the `last_used` index has been updated.
-    #[cfg(feature = "alloc")]
     unsafe fn pop_avail<'a>(&mut self) -> Result<Option<DescriptorBuffers<'a>>> {
         let Some(head) = self.peek_avail() else {
             return Ok(None);
@@ -1598,7 +1568,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn add_buffers_indirect() {
         use core::ptr::slice_from_raw_parts;
@@ -1797,7 +1766,6 @@ mod tests {
         assert!(driver_handle.join().is_ok());
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn simple_send_to_device() {
         // This test sends [0..10] using 1 10-byte descriptor
@@ -1828,7 +1796,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn split_send_to_device() {
         // This test sends [0..10] using 10 1-byte descriptors
@@ -1866,7 +1833,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn recv_from_device() {
         // This test makes 1 10-byte descriptor available to the device and receives [0..10] in the
@@ -1895,7 +1861,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
     fn recv_from_device_with_retry() {
         // In this test the driver makes a read descriptor available, the device pops it to try to

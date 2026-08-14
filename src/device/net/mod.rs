@@ -1,13 +1,10 @@
 //! Driver for VirtIO network devices.
 
-#[cfg(feature = "alloc")]
 mod dev;
 mod dev_raw;
-#[cfg(feature = "alloc")]
 mod net_buf;
 
 pub use self::dev_raw::VirtIONetRaw;
-#[cfg(feature = "alloc")]
 pub use self::{dev::VirtIONet, net_buf::RxBuffer, net_buf::TxBuffer};
 
 use crate::config::ReadOnly;

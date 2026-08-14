@@ -24,14 +24,12 @@
 //!
 //! ```
 //! # use virtio_drivers_and_devices::Hal;
-//! # #[cfg(feature = "alloc")]
 //! use virtio_drivers_and_devices::{
 //!     device::console::VirtIOConsole,
 //!     transport::{mmio::MmioTransport, DeviceType, Transport},
 //! };
 
 //!
-//! # #[cfg(feature = "alloc")]
 //! # fn example<HalImpl: Hal>(transport: MmioTransport) {
 //! if transport.device_type() == DeviceType::Console {
 //!     let mut console = VirtIOConsole::<HalImpl, _>::new(transport).unwrap();
@@ -46,7 +44,6 @@
 #![allow(clippy::identity_op)]
 #![allow(dead_code)]
 
-#[cfg(any(feature = "alloc", test))]
 extern crate alloc;
 
 mod config;
@@ -111,7 +108,6 @@ pub enum Error {
     InvalidDescriptor,
 }
 
-#[cfg(feature = "alloc")]
 impl From<alloc::string::FromUtf8Error> for Error {
     fn from(_value: alloc::string::FromUtf8Error) -> Self {
         Self::IoError
