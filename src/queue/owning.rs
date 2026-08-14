@@ -8,20 +8,22 @@ use zerocopy::FromZeros;
 
 /// A wrapper around [`Queue`] that owns all the buffers that are passed to the queue.
 #[derive(Debug)]
-pub struct OwningQueue<H: Hal, const SIZE: usize, const BUFFER_SIZE: usize> {
-    queue: VirtQueue<H, SIZE>,
+pub struct OwningQueue<H: Hal, const BUFFER_SIZE: usize> {
+    queue: VirtQueue<H>,
     buffers: Box<[NonNull<[u8; BUFFER_SIZE]>]>,
 }
 
-impl<H: Hal, const SIZE: usize, const BUFFER_SIZE: usize> OwningQueue<H, SIZE, BUFFER_SIZE> {
+impl<H: Hal, const BUFFER_SIZE: usize> OwningQueue<H, BUFFER_SIZE> {
     /// Constructs a new `OwningQueue` wrapping around the given `VirtQueue`.
     ///
-    /// This will allocate `SIZE` buffers of `BUFFER_SIZE` bytes each and add them to the queue.
+    /// This will allocate one buffer of `BUFFER_SIZE` bytes per queue slot and add them to the
+    /// queue.
     ///
     /// The caller is responsible for notifying the device if `should_notify` returns true.
-    pub fn new(mut queue: VirtQueue<H, SIZE>) -> Result<Self> {
-        let mut buffers = Vec::with_capacity(SIZE);
-        for i in 0..SIZE {
+    pub fn new(mut queue: VirtQueue<H>) -> Result<Self> {
+        let size = usize::from(queue.size);
+        let mut buffers = Vec::with_capacity(size);
+        for i in 0..size {
             let mut buffer: Box<[u8; BUFFER_SIZE]> = FromZeros::new_box_zeroed().unwrap();
             // SAFETY: The buffer lives as long as the queue, as specified in the function safety
             // requirement, and we don't access it until it is popped.
@@ -127,24 +129,12 @@ impl<H: Hal, const SIZE: usize, const BUFFER_SIZE: usize> OwningQueue<H, SIZE, B
 }
 
 // SAFETY: The `buffers` can be accessed from any thread.
-unsafe impl<H: Hal, const SIZE: usize, const BUFFER_SIZE: usize> Send
-    for OwningQueue<H, SIZE, BUFFER_SIZE>
-where
-    VirtQueue<H, SIZE>: Send,
-{
-}
+unsafe impl<H: Hal, const BUFFER_SIZE: usize> Send for OwningQueue<H, BUFFER_SIZE> {}
 
 // SAFETY: An `&OwningQueue` only allows calling `should_notify`.
-unsafe impl<H: Hal, const SIZE: usize, const BUFFER_SIZE: usize> Sync
-    for OwningQueue<H, SIZE, BUFFER_SIZE>
-where
-    VirtQueue<H, SIZE>: Sync,
-{
-}
+unsafe impl<H: Hal, const BUFFER_SIZE: usize> Sync for OwningQueue<H, BUFFER_SIZE> {}
 
-impl<H: Hal, const SIZE: usize, const BUFFER_SIZE: usize> Drop
-    for OwningQueue<H, SIZE, BUFFER_SIZE>
-{
+impl<H: Hal, const BUFFER_SIZE: usize> Drop for OwningQueue<H, BUFFER_SIZE> {
     fn drop(&mut self) {
         for buffer in &self.buffers {
             // SAFETY: We obtained the buffer pointer from `Box::into_raw`, and it won't be used

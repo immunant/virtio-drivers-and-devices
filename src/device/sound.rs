@@ -32,7 +32,7 @@ pub struct VirtIOSound<H: Hal, T: Transport> {
     transport: T,
 
     control_queue: VirtQueue<H>,
-    event_queue: OwningQueue<H, { QUEUE_SIZE as usize }, { size_of::<VirtIOSndEvent>() }>,
+    event_queue: OwningQueue<H, { size_of::<VirtIOSndEvent>() }>,
     tx_queue: VirtQueue<H>,
     rx_queue: VirtQueue<H>,
 

@@ -1491,7 +1491,7 @@ mod tests {
             unsafe { MmioTransport::new(NonNull::from(&mut header), size_of::<VirtIOHeader>()) }
                 .unwrap();
         assert_eq!(
-            VirtQueue::<FakeHal, 8>::new(&mut transport, 0, false, false).unwrap_err(),
+            VirtQueue::<FakeHal>::new(&mut transport, 0, 8, false, false).unwrap_err(),
             Error::InvalidParam
         );
     }
@@ -1502,9 +1502,9 @@ mod tests {
         let mut transport =
             unsafe { MmioTransport::new(NonNull::from(&mut header), size_of::<VirtIOHeader>()) }
                 .unwrap();
-        VirtQueue::<FakeHal, 4>::new(&mut transport, 0, false, false).unwrap();
+        VirtQueue::<FakeHal>::new(&mut transport, 0, 4, false, false).unwrap();
         assert_eq!(
-            VirtQueue::<FakeHal, 4>::new(&mut transport, 0, false, false).unwrap_err(),
+            VirtQueue::<FakeHal>::new(&mut transport, 0, 4, false, false).unwrap_err(),
             Error::AlreadyUsed
         );
     }
@@ -1515,7 +1515,7 @@ mod tests {
         let mut transport =
             unsafe { MmioTransport::new(NonNull::from(&mut header), size_of::<VirtIOHeader>()) }
                 .unwrap();
-        let mut queue = VirtQueue::<FakeHal, 4>::new(&mut transport, 0, false, false).unwrap();
+        let mut queue = VirtQueue::<FakeHal>::new(&mut transport, 0, 4, false, false).unwrap();
         assert_eq!(
             unsafe { queue.add(&[], &mut []) }.unwrap_err(),
             Error::InvalidParam
@@ -1528,7 +1528,7 @@ mod tests {
         let mut transport =
             unsafe { MmioTransport::new(NonNull::from(&mut header), size_of::<VirtIOHeader>()) }
                 .unwrap();
-        let mut queue = VirtQueue::<FakeHal, 4>::new(&mut transport, 0, false, false).unwrap();
+        let mut queue = VirtQueue::<FakeHal>::new(&mut transport, 0, 4, false, false).unwrap();
         assert_eq!(queue.available_desc(), 4);
         assert_eq!(
             unsafe { queue.add(&[&[], &[], &[]], &mut [&mut [], &mut []]) }.unwrap_err(),
@@ -1542,7 +1542,7 @@ mod tests {
         let mut transport =
             unsafe { MmioTransport::new(NonNull::from(&mut header), size_of::<VirtIOHeader>()) }
                 .unwrap();
-        let mut queue = VirtQueue::<FakeHal, 4>::new(&mut transport, 0, false, false).unwrap();
+        let mut queue = VirtQueue::<FakeHal>::new(&mut transport, 0, 4, false, false).unwrap();
         assert_eq!(queue.available_desc(), 4);
 
         // Add a buffer chain consisting of two device-readable parts followed by two
@@ -1607,7 +1607,7 @@ mod tests {
         let mut transport =
             unsafe { MmioTransport::new(NonNull::from(&mut header), size_of::<VirtIOHeader>()) }
                 .unwrap();
-        let mut queue = VirtQueue::<FakeHal, 4>::new(&mut transport, 0, true, false).unwrap();
+        let mut queue = VirtQueue::<FakeHal>::new(&mut transport, 0, 4, true, false).unwrap();
         assert_eq!(queue.available_desc(), 4);
 
         // Add a buffer chain consisting of two device-readable parts followed by two
@@ -1663,7 +1663,7 @@ mod tests {
             device_features: 0,
             state: state.clone(),
         };
-        let mut queue = VirtQueue::<FakeHal, 4>::new(&mut transport, 0, false, false).unwrap();
+        let mut queue = VirtQueue::<FakeHal>::new(&mut transport, 0, 4, false, false).unwrap();
 
         // Check that the avail ring's flag is zero by default.
         assert_eq!(
@@ -1699,7 +1699,7 @@ mod tests {
             device_features: 0,
             state: state.clone(),
         };
-        let mut queue = VirtQueue::<FakeHal, 4>::new(&mut transport, 0, false, false).unwrap();
+        let mut queue = VirtQueue::<FakeHal>::new(&mut transport, 0, 4, false, false).unwrap();
 
         // Add a buffer chain with a single device-readable part.
         unsafe { queue.add(&[&[42]], &mut []) }.unwrap();
@@ -1729,7 +1729,7 @@ mod tests {
             device_features: Feature::RING_EVENT_IDX.bits(),
             state: state.clone(),
         };
-        let mut queue = VirtQueue::<FakeHal, 4>::new(&mut transport, 0, false, true).unwrap();
+        let mut queue = VirtQueue::<FakeHal>::new(&mut transport, 0, 4, false, true).unwrap();
 
         // Add a buffer chain with a single device-readable part.
         assert_eq!(unsafe { queue.add(&[&[42]], &mut []) }.unwrap(), 0);

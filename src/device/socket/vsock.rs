@@ -233,7 +233,7 @@ pub struct VirtIOSocket<
 > {
     transport: T,
     /// Virtqueue to receive packets.
-    rx: L::Lock<OwningQueue<H, QUEUE_SIZE, RX_BUFFER_SIZE>>,
+    rx: L::Lock<OwningQueue<H, RX_BUFFER_SIZE>>,
     tx: L::Lock<VirtQueue<H>>,
     /// Virtqueue to receive events from the device.
     event: L::Lock<VirtQueue<H>>,
