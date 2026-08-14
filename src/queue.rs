@@ -24,11 +24,8 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 /// The mechanism for bulk data transport on virtio devices.
 ///
 /// Each device can have zero or more virtqueues.
-///
-/// * `SIZE`: The size of the queue. This is both the number of descriptors, and the number of slots
-///   in the available and used rings. It must be a power of 2 and fit in a [`u16`].
 #[derive(Debug)]
-pub struct VirtQueue<H: Hal, const SIZE: usize> {
+pub struct VirtQueue<H: Hal> {
     /// DMA guard
     layout: VirtQueueLayout<Dma<H>>,
     /// Descriptor table
@@ -67,11 +64,10 @@ pub struct VirtQueue<H: Hal, const SIZE: usize> {
     indirect_lists: Box<[Option<NonNull<[Descriptor]>>]>,
 }
 
-impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
-    const SIZE_OK: () = assert!(SIZE.is_power_of_two() && SIZE <= u16::MAX as usize);
-
+impl<H: Hal> VirtQueue<H> {
     /// Creates a new VirtQueue.
     ///
+    /// * `size`: The size of the queue. Must be a power of 2 and fit in a [`u16`].
     /// * `indirect`: Whether to use indirect descriptors. This should be set if the
     ///   `VIRTIO_F_INDIRECT_DESC` feature has been negotiated with the device.
     /// * `event_idx`: Whether to use the `used_event` and `avail_event` fields for notification
@@ -80,19 +76,19 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
     pub fn new<T: Transport>(
         transport: &mut T,
         idx: u16,
+        size: u16,
         indirect: bool,
         event_idx: bool,
     ) -> Result<Self> {
-        #[allow(clippy::let_unit_value)]
-        let _ = Self::SIZE_OK;
-
+        if !size.is_power_of_two() {
+            return Err(Error::InvalidParam);
+        }
         if transport.queue_used(idx) {
             return Err(Error::AlreadyUsed);
         }
-        if transport.max_queue_size(idx) < SIZE as u32 {
+        if transport.max_queue_size(idx) < u32::from(size) {
             return Err(Error::InvalidParam);
         }
-        let size = SIZE as u16;
 
         let layout = if transport.requires_legacy_layout() {
             VirtQueueLayout::allocate_legacy(size)?
@@ -555,11 +551,11 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
 }
 
 // SAFETY: None of the virt queue resources are tied to a particular thread.
-unsafe impl<H: Hal, const SIZE: usize> Send for VirtQueue<H, SIZE> {}
+unsafe impl<H: Hal> Send for VirtQueue<H> {}
 
 // SAFETY: A `&VirtQueue` only allows reading from the various pointers it contains, so there is no
 // data race.
-unsafe impl<H: Hal, const SIZE: usize> Sync for VirtQueue<H, SIZE> {}
+unsafe impl<H: Hal> Sync for VirtQueue<H> {}
 
 #[derive(Debug)]
 pub struct MappedDescriptor<H: DeviceHal> {
@@ -1758,24 +1754,24 @@ mod tests {
         assert_eq!(queue.should_notify(), true);
     }
 
-    struct VirtQueuePair<const SIZE: usize> {
-        driver: VirtQueue<FakeHal, SIZE>,
+    struct VirtQueuePair {
+        driver: VirtQueue<FakeHal>,
         device: DeviceVirtQueue<FakeHal>,
         transport: FakeTransport<()>,
     }
 
     // Create a device/driver virtqueue pair which share memory in the test process's virtual
     // address space
-    fn create_queues<const SIZE: usize>(device_type: DeviceType) -> VirtQueuePair<SIZE> {
+    fn create_queues(size: u16, device_type: DeviceType) -> VirtQueuePair {
         let mut header = VirtIOHeader::make_fake_header(MODERN_VERSION, 1, 0, 0, 4);
         let state = Arc::new(Mutex::new(State::new(vec![QueueStatus::default()], ())));
         let mut transport = FakeTransport {
             device_type,
-            max_queue_size: SIZE as u32,
+            max_queue_size: u32::from(size),
             device_features: 0,
             state: state.clone(),
         };
-        let driver = VirtQueue::<FakeHal, SIZE>::new(&mut transport, 0, false, true).unwrap();
+        let driver = VirtQueue::<FakeHal>::new(&mut transport, 0, size, false, true).unwrap();
         let device = DeviceVirtQueue::<FakeHal>::new(&mut transport, 0).unwrap();
         VirtQueuePair {
             driver,
@@ -1787,11 +1783,12 @@ mod tests {
     // Run a test with the given callbacks using a virtqueue pair. Since this spins up new threads
     // we must assert whether the threads join or not to ensure that asserts in the callback get
     // called before the test's main thread returns.
-    fn queue_pair_test<const SIZE: usize>(
-        driver_func: impl FnOnce(VirtQueue<FakeHal, SIZE>, FakeTransport<()>) + Send + 'static,
+    fn queue_pair_test(
+        size: u16,
+        driver_func: impl FnOnce(VirtQueue<FakeHal>, FakeTransport<()>) + Send + 'static,
         device_func: impl FnOnce(DeviceVirtQueue<FakeHal>, FakeTransport<()>) + Send + 'static,
     ) {
-        let mut queues = create_queues::<SIZE>(DeviceType::Socket);
+        let mut queues = create_queues(size, DeviceType::Socket);
         let mut dev_transport = queues.transport.clone();
         let driver_handle = thread::spawn(move || driver_func(queues.driver, queues.transport));
         let device_handle = thread::spawn(move || device_func(queues.device, dev_transport));
@@ -1805,7 +1802,8 @@ mod tests {
     fn simple_send_to_device() {
         // This test sends [0..10] using 1 10-byte descriptor
         let mut data: [u8; 10] = array::from_fn(|i| i as u8);
-        queue_pair_test::<8>(
+        queue_pair_test(
+            8,
             move |mut driver, mut transport| {
                 driver
                     .add_notify_wait_pop(&[&data], &mut [], &mut transport)
@@ -1839,7 +1837,8 @@ mod tests {
         // Data in a single descriptor as the device is expected to receive it
         let device_data: [u8; 10] = array::from_fn(|i| i as u8);
 
-        queue_pair_test::<16>(
+        queue_pair_test(
+            16,
             move |mut driver, mut transport| {
                 // Creates a &[&[u8]] from driver_data and sends it to the device
                 driver
@@ -1876,7 +1875,8 @@ mod tests {
         let mut buffer = [0u8; 10];
         // The data the device will send
         let data: [u8; 10] = array::from_fn(|i| i as u8);
-        queue_pair_test::<8>(
+        queue_pair_test(
+            8,
             move |mut driver, mut transport| {
                 assert_eq!(buffer, [0; 10]);
                 // Add a write descriptor for the device to use then pop it
@@ -1903,7 +1903,8 @@ mod tests {
         // the device retries and succeeds at sending the data.
         let mut buffer = [0u8; 10];
         let data: [u8; 10] = array::from_fn(|i| i as u8);
-        queue_pair_test::<8>(
+        queue_pair_test(
+            8,
             move |mut driver, mut transport| {
                 // Add a 1-byte read descriptor to the avail vring
                 let read_buffer = [0; 1];
