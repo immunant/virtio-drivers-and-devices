@@ -16,7 +16,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 const QUEUE_RECEIVEQ_PORT_0: u16 = 0;
 const QUEUE_TRANSMITQ_PORT_0: u16 = 1;
-const QUEUE_SIZE: usize = 2;
+const QUEUE_SIZE: u16 = 2;
 const SUPPORTED_FEATURES: Features = Features::RING_EVENT_IDX
     .union(Features::RING_INDIRECT_DESC)
     .union(Features::SIZE)
@@ -50,8 +50,8 @@ const SUPPORTED_FEATURES: Features = Features::RING_EVENT_IDX
 pub struct VirtIOConsole<H: Hal, T: Transport> {
     transport: T,
     negotiated_features: Features,
-    receiveq: VirtQueue<H, QUEUE_SIZE>,
-    transmitq: VirtQueue<H, QUEUE_SIZE>,
+    receiveq: VirtQueue<H>,
+    transmitq: VirtQueue<H>,
     queue_buf_rx: Box<[u8; PAGE_SIZE]>,
     /// The index of the next byte in `queue_buf_rx` which `recv` should return.
     cursor: usize,
@@ -62,16 +62,10 @@ pub struct VirtIOConsole<H: Hal, T: Transport> {
 }
 
 // SAFETY: The config space can be accessed from any thread.
-unsafe impl<H: Hal, T: Transport + Send> Send for VirtIOConsole<H, T> where
-    VirtQueue<H, QUEUE_SIZE>: Send
-{
-}
+unsafe impl<H: Hal, T: Transport + Send> Send for VirtIOConsole<H, T> {}
 
 // SAFETY: A `&VirtIOConsole` only allows reading the config space.
-unsafe impl<H: Hal, T: Transport + Sync> Sync for VirtIOConsole<H, T> where
-    VirtQueue<H, QUEUE_SIZE>: Sync
-{
-}
+unsafe impl<H: Hal, T: Transport + Sync> Sync for VirtIOConsole<H, T> {}
 
 /// The width and height of a console, in characters.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -95,12 +89,14 @@ impl<H: Hal, T: Transport> VirtIOConsole<H, T> {
         let receiveq = VirtQueue::new(
             &mut transport,
             QUEUE_RECEIVEQ_PORT_0,
+            QUEUE_SIZE,
             negotiated_features.contains(Features::RING_INDIRECT_DESC),
             negotiated_features.contains(Features::RING_EVENT_IDX),
         )?;
         let transmitq = VirtQueue::new(
             &mut transport,
             QUEUE_TRANSMITQ_PORT_0,
+            QUEUE_SIZE,
             negotiated_features.contains(Features::RING_INDIRECT_DESC),
             negotiated_features.contains(Features::RING_EVENT_IDX),
         )?;
@@ -422,7 +418,7 @@ mod tests {
         // Make a character available, and simulate an interrupt.
         {
             let mut state = state.lock().unwrap();
-            state.write_to_queue::<QUEUE_SIZE>(QUEUE_RECEIVEQ_PORT_0, &[42]);
+            state.write_to_queue::<{ QUEUE_SIZE as usize }>(QUEUE_RECEIVEQ_PORT_0, &[42]);
 
             state.interrupt_pending = true;
         }
@@ -464,7 +460,7 @@ mod tests {
             let data = state
                 .lock()
                 .unwrap()
-                .read_from_queue::<QUEUE_SIZE>(QUEUE_TRANSMITQ_PORT_0);
+                .read_from_queue::<{ QUEUE_SIZE as usize }>(QUEUE_TRANSMITQ_PORT_0);
             assert_eq!(data, b"Q");
         });
 

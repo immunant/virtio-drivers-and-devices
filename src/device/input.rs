@@ -18,27 +18,29 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 /// making pass-through implementations on top of evdev easy.
 pub struct VirtIOInput<H: Hal, T: Transport> {
     transport: T,
-    event_queue: VirtQueue<H, QUEUE_SIZE>,
-    status_queue: VirtQueue<H, QUEUE_SIZE>,
+    event_queue: VirtQueue<H>,
+    status_queue: VirtQueue<H>,
     event_buf: Box<[InputEvent; 32]>,
 }
 
 impl<H: Hal, T: Transport> VirtIOInput<H, T> {
     /// Create a new VirtIO-Input driver.
     pub fn new(mut transport: T) -> Result<Self, Error> {
-        let mut event_buf = Box::new([InputEvent::default(); QUEUE_SIZE]);
+        let mut event_buf = Box::new([InputEvent::default(); QUEUE_SIZE as usize]);
 
         let negotiated_features = transport.begin_init(SUPPORTED_FEATURES)?;
 
         let mut event_queue = VirtQueue::new(
             &mut transport,
             QUEUE_EVENT,
+            QUEUE_SIZE,
             negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
         let status_queue = VirtQueue::new(
             &mut transport,
             QUEUE_STATUS,
+            QUEUE_SIZE,
             negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
@@ -199,16 +201,10 @@ impl<H: Hal, T: Transport> VirtIOInput<H, T> {
 }
 
 // SAFETY: The config space can be accessed from any thread.
-unsafe impl<H: Hal, T: Transport + Send> Send for VirtIOInput<H, T> where
-    VirtQueue<H, QUEUE_SIZE>: Send
-{
-}
+unsafe impl<H: Hal, T: Transport + Send> Send for VirtIOInput<H, T> {}
 
 // SAFETY: An '&VirtIOInput` can't do anything, all methods take `&mut self`.
-unsafe impl<H: Hal, T: Transport + Sync> Sync for VirtIOInput<H, T> where
-    VirtQueue<H, QUEUE_SIZE>: Sync
-{
-}
+unsafe impl<H: Hal, T: Transport + Sync> Sync for VirtIOInput<H, T> {}
 
 impl<H: Hal, T: Transport> Drop for VirtIOInput<H, T> {
     fn drop(&mut self) {
@@ -306,7 +302,7 @@ const SUPPORTED_FEATURES: Feature = Feature::RING_EVENT_IDX
     .union(Feature::VERSION_1);
 
 // a parameter that can change
-const QUEUE_SIZE: usize = 32;
+const QUEUE_SIZE: u16 = 32;
 
 #[cfg(test)]
 mod tests {
@@ -338,7 +334,7 @@ mod tests {
         )));
         let transport = FakeTransport {
             device_type: DeviceType::Block,
-            max_queue_size: QUEUE_SIZE.try_into().unwrap(),
+            max_queue_size: u32::from(QUEUE_SIZE),
             device_features: 0,
             state: state.clone(),
         };

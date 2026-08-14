@@ -20,8 +20,8 @@ use zerocopy::IntoBytes;
 pub struct VirtIONetRaw<H: Hal, T: Transport, const QUEUE_SIZE: usize> {
     transport: T,
     mac: EthernetAddress,
-    recv_queue: VirtQueue<H, QUEUE_SIZE>,
-    send_queue: VirtQueue<H, QUEUE_SIZE>,
+    recv_queue: VirtQueue<H>,
+    send_queue: VirtQueue<H>,
     /// Whether `num_buffers` is missing in the `virtio_net_hdr` struct.
     pub(crate) legacy_header: bool,
 }
@@ -37,15 +37,18 @@ impl<H: Hal, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, T, QUEUE_SIZ
         let status = read_config!(transport, Config, status)?;
         debug!("Got MAC={:02x?}, status={:?}", mac, status);
 
+        let queue_size = u16::try_from(QUEUE_SIZE).map_err(|_| Error::InvalidParam)?;
         let send_queue = VirtQueue::new(
             &mut transport,
             QUEUE_TRANSMIT,
+            queue_size,
             negotiated_features.contains(Features::RING_INDIRECT_DESC),
             negotiated_features.contains(Features::RING_EVENT_IDX),
         )?;
         let recv_queue = VirtQueue::new(
             &mut transport,
             QUEUE_RECEIVE,
+            queue_size,
             negotiated_features.contains(Features::RING_INDIRECT_DESC),
             negotiated_features.contains(Features::RING_EVENT_IDX),
         )?;

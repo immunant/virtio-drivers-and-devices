@@ -12,7 +12,7 @@ use crate::config::read_config;
 use crate::hal::{DeviceHal, Hal};
 use crate::queue::{owning::OwningQueue, DeviceVirtQueue, VirtQueue};
 use crate::transport::{DeviceTransport, InterruptStatus, Transport};
-use crate::{Lock, LockFactory, Result};
+use crate::{Error, Lock, LockFactory, Result};
 use alloc::sync::Arc;
 use core::mem::size_of;
 use log::debug;
@@ -233,10 +233,10 @@ pub struct VirtIOSocket<
 > {
     transport: T,
     /// Virtqueue to receive packets.
-    rx: L::Lock<OwningQueue<H, QUEUE_SIZE, RX_BUFFER_SIZE>>,
-    tx: L::Lock<VirtQueue<H, { QUEUE_SIZE }>>,
+    rx: L::Lock<OwningQueue<H, RX_BUFFER_SIZE>>,
+    tx: L::Lock<VirtQueue<H>>,
     /// Virtqueue to receive events from the device.
-    event: L::Lock<VirtQueue<H, { QUEUE_SIZE }>>,
+    event: L::Lock<VirtQueue<H>>,
     /// The guest_cid field contains the guest’s context ID, which uniquely identifies
     /// the device for its lifetime. The upper 32 bits of the CID are reserved and zeroed.
     guest_cid: u64,
@@ -258,7 +258,13 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
     VirtIOSocket<H, T, L, RX_BUFFER_SIZE>
 {
     /// Create a new VirtIO Vsock driver.
-    pub fn new(mut transport: T) -> Result<Self> {
+    pub fn new(transport: T) -> Result<Self> {
+        let queue_size = u16::try_from(QUEUE_SIZE).map_err(|_| Error::InvalidParam)?;
+        Self::new_with_queue_size(transport, queue_size)
+    }
+
+    /// Create a new VirtIO Vsock driver with the given queue size.
+    pub fn new_with_queue_size(mut transport: T, queue_size: u16) -> Result<Self> {
         assert!(RX_BUFFER_SIZE > size_of::<VirtioVsockHdr>());
 
         let negotiated_features = transport.begin_init(SUPPORTED_FEATURES)?;
@@ -274,18 +280,21 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
         let rx = VirtQueue::new(
             &mut transport,
             RX_QUEUE_IDX,
+            queue_size,
             negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
         let tx = VirtQueue::new(
             &mut transport,
             TX_QUEUE_IDX,
+            queue_size,
             negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
         let event = VirtQueue::new(
             &mut transport,
             EVENT_QUEUE_IDX,
+            queue_size,
             negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
@@ -441,9 +450,9 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> VirtIOSo
 /// A low-level interface for a vsock device implementation
 pub struct VirtIOSocketDevice<H: DeviceHal, T: DeviceTransport, L: LockFactory> {
     transport: T,
-    rx: L::Lock<DeviceVirtQueue<H, { QUEUE_SIZE }>>,
-    tx: L::Lock<DeviceVirtQueue<H, { QUEUE_SIZE }>>,
-    event: L::Lock<DeviceVirtQueue<H, { QUEUE_SIZE }>>,
+    rx: L::Lock<DeviceVirtQueue<H>>,
+    tx: L::Lock<DeviceVirtQueue<H>>,
+    event: L::Lock<DeviceVirtQueue<H>>,
 }
 
 impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VirtIOSocketDevice<H, T, L> {

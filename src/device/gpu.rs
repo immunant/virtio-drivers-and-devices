@@ -30,9 +30,9 @@ pub struct VirtIOGpu<H: Hal, T: Transport> {
     /// DMA area of cursor image buffer.
     cursor_buffer_dma: Option<Dma<H>>,
     /// Queue for sending control commands.
-    control_queue: VirtQueue<H, { QUEUE_SIZE as usize }>,
+    control_queue: VirtQueue<H>,
     /// Queue for sending cursor commands.
-    cursor_queue: VirtQueue<H, { QUEUE_SIZE as usize }>,
+    cursor_queue: VirtQueue<H>,
     /// Send buffer for queue.
     queue_buf_send: Box<[u8]>,
     /// Recv buffer for queue.
@@ -55,12 +55,14 @@ impl<H: Hal, T: Transport> VirtIOGpu<H, T> {
         let control_queue = VirtQueue::new(
             &mut transport,
             QUEUE_TRANSMIT,
+            QUEUE_SIZE,
             negotiated_features.contains(Features::RING_INDIRECT_DESC),
             negotiated_features.contains(Features::RING_EVENT_IDX),
         )?;
         let cursor_queue = VirtQueue::new(
             &mut transport,
             QUEUE_CURSOR,
+            QUEUE_SIZE,
             negotiated_features.contains(Features::RING_INDIRECT_DESC),
             negotiated_features.contains(Features::RING_EVENT_IDX),
         )?;
