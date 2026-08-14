@@ -45,7 +45,7 @@ const SUPPORTED_FEATURES: BlkFeature = BlkFeature::RO
 /// ```
 pub struct VirtIOBlk<H: Hal, T: Transport> {
     transport: T,
-    queue: VirtQueue<H, { QUEUE_SIZE as usize }>,
+    queue: VirtQueue<H>,
     capacity: u64,
     negotiated_features: BlkFeature,
 }
@@ -65,6 +65,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
         let queue = VirtQueue::new(
             &mut transport,
             QUEUE,
+            QUEUE_SIZE,
             negotiated_features.contains(BlkFeature::RING_INDIRECT_DESC),
             negotiated_features.contains(BlkFeature::RING_EVENT_IDX),
         )?;

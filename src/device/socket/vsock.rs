@@ -12,7 +12,7 @@ use crate::config::read_config;
 use crate::hal::{DeviceHal, Hal};
 use crate::queue::{owning::OwningQueue, DeviceVirtQueue, VirtQueue};
 use crate::transport::{DeviceTransport, InterruptStatus, Transport};
-use crate::{Lock, LockFactory, Result};
+use crate::{Error, Lock, LockFactory, Result};
 use alloc::sync::Arc;
 use core::mem::size_of;
 use log::debug;
@@ -234,9 +234,9 @@ pub struct VirtIOSocket<
     transport: T,
     /// Virtqueue to receive packets.
     rx: L::Lock<OwningQueue<H, QUEUE_SIZE, RX_BUFFER_SIZE>>,
-    tx: L::Lock<VirtQueue<H, { QUEUE_SIZE }>>,
+    tx: L::Lock<VirtQueue<H>>,
     /// Virtqueue to receive events from the device.
-    event: L::Lock<VirtQueue<H, { QUEUE_SIZE }>>,
+    event: L::Lock<VirtQueue<H>>,
     /// The guest_cid field contains the guest’s context ID, which uniquely identifies
     /// the device for its lifetime. The upper 32 bits of the CID are reserved and zeroed.
     guest_cid: u64,
@@ -271,21 +271,25 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
         })?;
         debug!("guest cid: {guest_cid:?}");
 
+        let queue_size = u16::try_from(QUEUE_SIZE).map_err(|_| Error::InvalidParam)?;
         let rx = VirtQueue::new(
             &mut transport,
             RX_QUEUE_IDX,
+            queue_size,
             negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
         let tx = VirtQueue::new(
             &mut transport,
             TX_QUEUE_IDX,
+            queue_size,
             negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
         let event = VirtQueue::new(
             &mut transport,
             EVENT_QUEUE_IDX,
+            queue_size,
             negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;

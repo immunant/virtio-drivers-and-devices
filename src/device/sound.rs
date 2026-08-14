@@ -31,10 +31,10 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 pub struct VirtIOSound<H: Hal, T: Transport> {
     transport: T,
 
-    control_queue: VirtQueue<H, { QUEUE_SIZE as usize }>,
+    control_queue: VirtQueue<H>,
     event_queue: OwningQueue<H, { QUEUE_SIZE as usize }, { size_of::<VirtIOSndEvent>() }>,
-    tx_queue: VirtQueue<H, { QUEUE_SIZE as usize }>,
-    rx_queue: VirtQueue<H, { QUEUE_SIZE as usize }>,
+    tx_queue: VirtQueue<H>,
+    rx_queue: VirtQueue<H>,
 
     negotiated_features: Feature,
 
@@ -73,24 +73,28 @@ impl<H: Hal, T: Transport> VirtIOSound<H, T> {
         let control_queue = VirtQueue::new(
             &mut transport,
             CONTROL_QUEUE_IDX,
+            QUEUE_SIZE,
             negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
         let event_queue = OwningQueue::new(VirtQueue::new(
             &mut transport,
             EVENT_QUEUE_IDX,
+            QUEUE_SIZE,
             negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?)?;
         let tx_queue = VirtQueue::new(
             &mut transport,
             TX_QUEUE_IDX,
+            QUEUE_SIZE,
             negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
         let rx_queue = VirtQueue::new(
             &mut transport,
             RX_QUEUE_IDX,
+            QUEUE_SIZE,
             negotiated_features.contains(Feature::RING_INDIRECT_DESC),
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
