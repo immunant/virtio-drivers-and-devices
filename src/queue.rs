@@ -599,7 +599,7 @@ struct DescriptorBuffers<'a> {
 }
 
 #[derive(Debug)]
-pub struct DeviceVirtQueue<H: DeviceHal, const SIZE: usize> {
+pub struct DeviceVirtQueue<H: DeviceHal> {
     /// DMA guard
     layout: VirtQueueLayout<DeviceDma<H>>,
 
@@ -608,6 +608,7 @@ pub struct DeviceVirtQueue<H: DeviceHal, const SIZE: usize> {
     used: UsedRing,
 
     queue_idx: u16,
+    size: u16,
 
     /// Our trusted copy of `avail.idx`.
     avail_idx: u16,
@@ -616,19 +617,13 @@ pub struct DeviceVirtQueue<H: DeviceHal, const SIZE: usize> {
     client_id: u16,
 }
 
-impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
-    const SIZE_OK: () = assert!(SIZE.is_power_of_two() && SIZE <= u16::MAX as usize);
-
+impl<H: DeviceHal> DeviceVirtQueue<H> {
     pub fn new<T: DeviceTransport>(transport: &mut T, idx: u16) -> Result<Self> {
-        #[allow(clippy::let_unit_value)]
-        let _ = Self::SIZE_OK;
-
-        if transport.max_queue_size(idx) != SIZE as u32 {
+        let size = u16::try_from(transport.max_queue_size(idx)).map_err(|_| Error::InvalidParam)?;
+        if !size.is_power_of_two() {
             return Err(Error::InvalidParam);
         }
         let client_id = transport.get_client_id();
-
-        let size = SIZE as u16;
 
         let [paddr, _, used_paddr] = transport.queue_get(idx);
 
@@ -642,20 +637,24 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
             // used vring.
             unsafe { VirtQueueLayout::map_flexible(size, paddr, used_paddr, client_id)? }
         };
-        let desc =
-            nonnull_slice_from_raw_parts(layout.descriptors_vaddr().cast::<Descriptor>(), SIZE);
+        let desc = nonnull_slice_from_raw_parts(
+            layout.descriptors_vaddr().cast::<Descriptor>(),
+            usize::from(size),
+        );
         // SAFETY: avail ring memory was mapped in `layout` with the correct size.
-        let avail = unsafe { AvailRing::new(layout.avail_vaddr(), SIZE) };
+        let avail = unsafe { AvailRing::new(layout.avail_vaddr(), size) };
         // SAFETY: used ring memory was mapped in `layout` with the correct size.
-        let used = unsafe { UsedRing::new(layout.used_vaddr(), SIZE) };
-        let desc_mapped: Box<[Option<MappedDescriptor<H>>]> =
-            core::iter::repeat_with(|| None).take(SIZE).collect();
+        let used = unsafe { UsedRing::new(layout.used_vaddr(), size) };
+        let desc_mapped: Box<[Option<MappedDescriptor<H>>]> = core::iter::repeat_with(|| None)
+            .take(usize::from(size))
+            .collect();
         Ok(DeviceVirtQueue {
             layout,
             desc,
             avail,
             used,
             queue_idx: idx,
+            size,
             avail_idx: 0,
             last_used_idx: 0,
             desc_mapped,
@@ -753,7 +752,7 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
     }
 
     fn add_used(&mut self, head: u16, head_len: usize) {
-        let last_used_slot = self.last_used_idx & (SIZE as u16 - 1);
+        let last_used_slot = self.last_used_idx & (self.size - 1);
         // SAFETY: `self.used.ring` points to a properly aligned, dereferenceable,
         // initialised slice of `SIZE` `UsedElem` entries.
         unsafe {
@@ -866,7 +865,7 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
 
     fn peek_avail(&self) -> Option<u16> {
         if self.can_pop() {
-            let avail_slot = self.avail_idx & (SIZE as u16 - 1);
+            let avail_slot = self.avail_idx & (self.size - 1);
             // SAFETY: `self.avail.ring` points to a properly aligned, dereferenceable,
             // initialised slice of `SIZE` u16 entries.
             Some(unsafe { (*self.avail.ring.as_ptr())[avail_slot as usize] })
@@ -883,11 +882,11 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
 }
 
 // SAFETY: None of the virt queue resources are tied to a particular thread.
-unsafe impl<H: DeviceHal, const SIZE: usize> Send for DeviceVirtQueue<H, SIZE> {}
+unsafe impl<H: DeviceHal> Send for DeviceVirtQueue<H> {}
 
 // SAFETY: A `&DeviceVirtQueue` only allows reading from the various pointers it contains, so there is no
 // data race.
-unsafe impl<H: DeviceHal, const SIZE: usize> Sync for DeviceVirtQueue<H, SIZE> {}
+unsafe impl<H: DeviceHal> Sync for DeviceVirtQueue<H> {}
 
 /// The inner layout of a VirtQueue.
 ///
@@ -1755,7 +1754,7 @@ mod tests {
 
     struct VirtQueuePair<const SIZE: usize> {
         driver: VirtQueue<FakeHal, SIZE>,
-        device: DeviceVirtQueue<FakeHal, SIZE>,
+        device: DeviceVirtQueue<FakeHal>,
         transport: FakeTransport<()>,
     }
 
@@ -1771,7 +1770,7 @@ mod tests {
             state: state.clone(),
         };
         let driver = VirtQueue::<FakeHal, SIZE>::new(&mut transport, 0, false, true).unwrap();
-        let device = DeviceVirtQueue::<FakeHal, SIZE>::new(&mut transport, 0).unwrap();
+        let device = DeviceVirtQueue::<FakeHal>::new(&mut transport, 0).unwrap();
         VirtQueuePair {
             driver,
             device,
@@ -1784,7 +1783,7 @@ mod tests {
     // called before the test's main thread returns.
     fn queue_pair_test<const SIZE: usize>(
         driver_func: impl FnOnce(VirtQueue<FakeHal, SIZE>, FakeTransport<()>) + Send + 'static,
-        device_func: impl FnOnce(DeviceVirtQueue<FakeHal, SIZE>, FakeTransport<()>) + Send + 'static,
+        device_func: impl FnOnce(DeviceVirtQueue<FakeHal>, FakeTransport<()>) + Send + 'static,
     ) {
         let mut queues = create_queues::<SIZE>(DeviceType::Socket);
         let mut dev_transport = queues.transport.clone();

@@ -441,9 +441,9 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize> VirtIOSo
 /// A low-level interface for a vsock device implementation
 pub struct VirtIOSocketDevice<H: DeviceHal, T: DeviceTransport, L: LockFactory> {
     transport: T,
-    rx: L::Lock<DeviceVirtQueue<H, { QUEUE_SIZE }>>,
-    tx: L::Lock<DeviceVirtQueue<H, { QUEUE_SIZE }>>,
-    event: L::Lock<DeviceVirtQueue<H, { QUEUE_SIZE }>>,
+    rx: L::Lock<DeviceVirtQueue<H>>,
+    tx: L::Lock<DeviceVirtQueue<H>>,
+    event: L::Lock<DeviceVirtQueue<H>>,
 }
 
 impl<H: DeviceHal, T: DeviceTransport, L: LockFactory> VirtIOSocketDevice<H, T, L> {
