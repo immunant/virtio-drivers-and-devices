@@ -45,7 +45,7 @@ pub struct VirtQueue<H: Hal, const SIZE: usize> {
     /// have `avail_idx` below to use instead.
     avail: AvailRing,
     /// Used ring
-    used: NonNull<UsedRing<SIZE>>,
+    used: UsedRing,
 
     /// The index of queue
     queue_idx: u16,
@@ -111,7 +111,8 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
             nonnull_slice_from_raw_parts(layout.descriptors_vaddr().cast::<Descriptor>(), SIZE);
         // SAFETY: avail ring memory was allocated in `layout` with the correct size.
         let avail = unsafe { AvailRing::new(layout.avail_vaddr(), SIZE) };
-        let used = layout.used_vaddr().cast();
+        // SAFETY: used ring memory was allocated in `layout` with the correct size.
+        let used = unsafe { UsedRing::new(layout.used_vaddr(), SIZE) };
 
         let mut desc_shadow: [Descriptor; SIZE] = FromZeros::new_zeroed();
         // Link descriptors together.
@@ -347,14 +348,14 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
     /// This will be false if the device has supressed notifications.
     pub fn should_notify(&self) -> bool {
         if self.event_idx {
-            // SAFETY: `self.used` points to a valid, aligned, initialised, dereferenceable, readable
-            // instance of `UsedRing`.
-            let avail_event = unsafe { (*self.used.as_ptr()).avail_event.load(Ordering::Acquire) };
+            // SAFETY: `self.used.avail_event` points to a properly aligned, dereferenceable,
+            // initialised `AtomicU16`.
+            let avail_event = unsafe { (*self.used.avail_event.as_ptr()).load(Ordering::Acquire) };
             self.avail_idx >= avail_event.wrapping_add(1)
         } else {
-            // SAFETY: `self.used` points to a valid, aligned, initialised, dereferenceable, readable
-            // instance of `UsedRing`.
-            unsafe { (*self.used.as_ptr()).flags.load(Ordering::Acquire) & 0x0001 == 0 }
+            // SAFETY: `self.used.flags` points to a properly aligned, dereferenceable,
+            // initialised `AtomicU16`.
+            unsafe { (*self.used.flags.as_ptr()).load(Ordering::Acquire) & 0x0001 == 0 }
         }
     }
 
@@ -371,9 +372,9 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
 
     /// Returns whether there is a used element that can be popped.
     pub fn can_pop(&self) -> bool {
-        // SAFETY: `self.used` points to a valid, aligned, initialised, dereferenceable, readable
-        // instance of `UsedRing`.
-        self.last_used_idx != unsafe { (*self.used.as_ptr()).idx.load(Ordering::Acquire) }
+        // SAFETY: `self.used.idx` points to a properly aligned, dereferenceable,
+        // initialised `AtomicU16`.
+        self.last_used_idx != unsafe { (*self.used.idx.as_ptr()).load(Ordering::Acquire) }
     }
 
     /// Returns the descriptor index (a.k.a. token) of the next used element without popping it, or
@@ -381,9 +382,9 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
     pub fn peek_used(&self) -> Option<u16> {
         if self.can_pop() {
             let last_used_slot = self.last_used_idx & (SIZE as u16 - 1);
-            // SAFETY: `self.used` points to a valid, aligned, initialised, dereferenceable,
-            // readable instance of `UsedRing`.
-            Some(unsafe { (*self.used.as_ptr()).ring[last_used_slot as usize].id as u16 })
+            // SAFETY: `self.used.ring` points to a properly aligned, dereferenceable,
+            // initialised slice of `SIZE` `UsedElem` entries.
+            Some(unsafe { (*self.used.ring.as_ptr())[last_used_slot as usize].id as u16 })
         } else {
             None
         }
@@ -519,11 +520,11 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
         let last_used_slot = self.last_used_idx & (SIZE as u16 - 1);
         let index;
         let len;
-        // SAFETY: `self.used` points to a valid, aligned, initialised, dereferenceable, readable
-        // instance of `UsedRing`.
+        // SAFETY: `self.used.ring` points to a properly aligned, dereferenceable,
+        // initialised slice of `SIZE` `UsedElem` entries.
         unsafe {
-            index = (*self.used.as_ptr()).ring[last_used_slot as usize].id as u16;
-            len = (*self.used.as_ptr()).ring[last_used_slot as usize].len;
+            index = (*self.used.ring.as_ptr())[last_used_slot as usize].id as u16;
+            len = (*self.used.ring.as_ptr())[last_used_slot as usize].len;
         }
 
         if index != token {
@@ -606,7 +607,7 @@ pub struct DeviceVirtQueue<H: DeviceHal, const SIZE: usize> {
 
     desc: NonNull<[Descriptor]>,
     avail: AvailRing,
-    used: NonNull<UsedRing<SIZE>>,
+    used: UsedRing,
 
     queue_idx: u16,
 
@@ -647,7 +648,8 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
             nonnull_slice_from_raw_parts(layout.descriptors_vaddr().cast::<Descriptor>(), SIZE);
         // SAFETY: avail ring memory was mapped in `layout` with the correct size.
         let avail = unsafe { AvailRing::new(layout.avail_vaddr(), SIZE) };
-        let used = layout.used_vaddr().cast();
+        // SAFETY: used ring memory was mapped in `layout` with the correct size.
+        let used = unsafe { UsedRing::new(layout.used_vaddr(), SIZE) };
         let desc_mapped = [const { None }; SIZE];
         Ok(DeviceVirtQueue {
             layout,
@@ -753,22 +755,20 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
 
     fn add_used(&mut self, head: u16, head_len: usize) {
         let last_used_slot = self.last_used_idx & (SIZE as u16 - 1);
-        // SAFETY: self.used is properly aligned, dereferenceable and initialised instance of
-        // UsedRing
+        // SAFETY: `self.used.ring` points to a properly aligned, dereferenceable,
+        // initialised slice of `SIZE` `UsedElem` entries.
         unsafe {
-            (*self.used.as_ptr()).ring[usize::from(last_used_slot)].id = u32::from(head);
-            (*self.used.as_ptr()).ring[usize::from(last_used_slot)].len = head_len as u32;
+            (*self.used.ring.as_ptr())[usize::from(last_used_slot)].id = u32::from(head);
+            (*self.used.ring.as_ptr())[usize::from(last_used_slot)].len = head_len as u32;
         }
 
         fence(Ordering::SeqCst);
 
         self.last_used_idx = self.last_used_idx.wrapping_add(1);
-        // SAFETY: self.used is properly aligned, dereferenceable and initialised instance of
-        // UsedRing
+        // SAFETY: `self.used.idx` points to a properly aligned, dereferenceable,
+        // initialised `AtomicU16`.
         unsafe {
-            (*self.used.as_ptr())
-                .idx
-                .store(self.last_used_idx, Ordering::Release);
+            (*self.used.idx.as_ptr()).store(self.last_used_idx, Ordering::Release);
         }
     }
 
@@ -1215,14 +1215,53 @@ impl AvailRing {
 
 /// The used ring is where the device returns buffers once it is done with them:
 /// it is only written to by the device, and read by the driver.
-#[repr(C)]
+///
+/// Ref: virtio 2.7.8 The Virtqueue Used Ring
 #[derive(Debug)]
-struct UsedRing<const SIZE: usize> {
-    flags: AtomicU16,
-    idx: AtomicU16,
-    ring: [UsedElem; SIZE],
-    /// Only used if `VIRTIO_F_EVENT_IDX` is negotiated.
-    avail_event: AtomicU16,
+struct UsedRing {
+    /// le16 flags
+    flags: NonNull<AtomicU16>,
+    /// le16 idx
+    idx: NonNull<AtomicU16>,
+    /// virtq_used_elem ring[queue_size]
+    ring: NonNull<[UsedElem]>,
+    /// le16 avail_event — Only used if `VIRTIO_F_EVENT_IDX` is negotiated.
+    avail_event: NonNull<AtomicU16>,
+}
+
+impl UsedRing {
+    /// Creates a `UsedRing` from a base pointer to used ring memory.
+    ///
+    /// # Safety
+    ///
+    /// `base` must point to valid, properly aligned memory for a used ring
+    /// with `queue_size` entries, laid out as specified in virtio 2.7.8:
+    /// `le16 flags`, `le16 idx`, `virtq_used_elem ring[queue_size]`, `le16 avail_event`.
+    unsafe fn new(base: NonNull<u8>, queue_size: usize) -> Self {
+        // Layout (virtio spec 2.7.8):
+        //   le16 flags                      (offset 0)
+        //   le16 idx                        (offset 2)
+        //   virtq_used_elem ring[SIZE]      (offset 4, each elem is 8 bytes)
+        //   le16 avail_event                (offset 4 + SIZE * 8)
+        unsafe {
+            Self {
+                flags: base.cast::<AtomicU16>(),
+                idx: NonNull::new(base.as_ptr().add(2).cast::<AtomicU16>())
+                    .expect("used ring idx pointer is null"),
+                ring: nonnull_slice_from_raw_parts(
+                    NonNull::new(base.as_ptr().add(4).cast::<UsedElem>())
+                        .expect("used ring ring pointer is null"),
+                    queue_size,
+                ),
+                avail_event: NonNull::new(
+                    base.as_ptr()
+                        .add(4 + queue_size * size_of::<UsedElem>())
+                        .cast::<AtomicU16>(),
+                )
+                .expect("used ring avail_event pointer is null"),
+            }
+        }
+    }
 }
 
 #[repr(C)]
@@ -1295,20 +1334,27 @@ pub(crate) fn fake_read_write_queue<const QUEUE_SIZE: usize>(
             QUEUE_SIZE,
         )
     };
-    let used_ring = queue_device_area as *mut UsedRing<QUEUE_SIZE>;
+    // SAFETY: queue_device_area points to a valid used ring with QUEUE_SIZE entries shared by
+    // the test VirtQueue.
+    let used_ring = unsafe {
+        UsedRing::new(
+            NonNull::new(queue_device_area.cast::<u8>()).expect("queue_device_area is null"),
+            QUEUE_SIZE,
+        )
+    };
 
     // Safe because the various pointers are properly aligned, dereferenceable, initialised, and
     // nothing else accesses them during this block.
     unsafe {
         // Make sure there is actually at least one descriptor available to read from.
         if (*available_ring.idx.as_ptr()).load(Ordering::Acquire)
-            == (*used_ring).idx.load(Ordering::Acquire)
+            == (*used_ring.idx.as_ptr()).load(Ordering::Acquire)
         {
             return false;
         }
         // The fake device always uses descriptors in order, like VIRTIO_F_IN_ORDER, so
         // `used_ring.idx` marks the next descriptor we should take from the available ring.
-        let next_slot = (*used_ring).idx.load(Ordering::Acquire) & (QUEUE_SIZE as u16 - 1);
+        let next_slot = (*used_ring.idx.as_ptr()).load(Ordering::Acquire) & (QUEUE_SIZE as u16 - 1);
         let head_descriptor_index = (*available_ring.ring.as_ptr())[next_slot as usize];
         let mut descriptor = &(*descriptors)[head_descriptor_index as usize];
 
@@ -1409,9 +1455,9 @@ pub(crate) fn fake_read_write_queue<const QUEUE_SIZE: usize>(
         }
 
         // Mark the buffer as used.
-        (*used_ring).ring[next_slot as usize].id = head_descriptor_index.into();
-        (*used_ring).ring[next_slot as usize].len = (input_length + output.len()) as u32;
-        (*used_ring).idx.fetch_add(1, Ordering::AcqRel);
+        (*used_ring.ring.as_ptr())[next_slot as usize].id = head_descriptor_index.into();
+        (*used_ring.ring.as_ptr())[next_slot as usize].len = (input_length + output.len()) as u32;
+        (*used_ring.idx.as_ptr()).fetch_add(1, Ordering::AcqRel);
 
         true
     }
@@ -1661,7 +1707,7 @@ mod tests {
         // initialised, and nothing else is accessing them at the same time.
         unsafe {
             // Suppress notifications.
-            (*queue.used.as_ptr()).flags.store(0x01, Ordering::Release);
+            (*queue.used.flags.as_ptr()).store(0x01, Ordering::Release);
         }
 
         // Check that the transport would not be notified.
@@ -1691,9 +1737,7 @@ mod tests {
         // initialised, and nothing else is accessing them at the same time.
         unsafe {
             // Suppress notifications.
-            (*queue.used.as_ptr())
-                .avail_event
-                .store(1, Ordering::Release);
+            (*queue.used.avail_event.as_ptr()).store(1, Ordering::Release);
         }
 
         // Check that the transport would not be notified.
