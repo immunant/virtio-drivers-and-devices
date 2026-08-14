@@ -7,7 +7,7 @@ use crate::hal::{BufferDirection, DeviceDma, DeviceHal, Dma, DmaMemory, Hal, Phy
 use crate::transport::{DeviceTransport, Transport};
 use crate::{align_up, nonnull_slice_from_raw_parts, pages, Error, Result, PAGE_SIZE};
 use alloc::boxed::Box;
-#[cfg(feature = "alloc")]
+use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 #[cfg(test)]
@@ -612,7 +612,7 @@ pub struct DeviceVirtQueue<H: DeviceHal, const SIZE: usize> {
     /// Our trusted copy of `avail.idx`.
     avail_idx: u16,
     last_used_idx: u16,
-    desc_mapped: [Option<MappedDescriptor<H>>; SIZE],
+    desc_mapped: Box<[Option<MappedDescriptor<H>>]>,
     client_id: u16,
 }
 
@@ -648,7 +648,8 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
         let avail = unsafe { AvailRing::new(layout.avail_vaddr(), SIZE) };
         // SAFETY: used ring memory was mapped in `layout` with the correct size.
         let used = unsafe { UsedRing::new(layout.used_vaddr(), SIZE) };
-        let desc_mapped = [const { None }; SIZE];
+        let desc_mapped: Box<[Option<MappedDescriptor<H>>]> =
+            core::iter::repeat_with(|| None).take(SIZE).collect();
         Ok(DeviceVirtQueue {
             layout,
             desc,
