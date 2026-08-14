@@ -62,7 +62,7 @@ pub struct VirtQueue<H: Hal, const SIZE: usize> {
     #[cfg(feature = "alloc")]
     indirect: bool,
     #[cfg(feature = "alloc")]
-    indirect_lists: [Option<NonNull<[Descriptor]>>; SIZE],
+    indirect_lists: Box<[Option<NonNull<[Descriptor]>>]>,
 }
 
 impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
@@ -125,8 +125,6 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
             }
         }
 
-        #[cfg(feature = "alloc")]
-        const NONE: Option<NonNull<[Descriptor]>> = None;
         Ok(VirtQueue {
             layout,
             desc,
@@ -142,7 +140,7 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
             #[cfg(feature = "alloc")]
             indirect,
             #[cfg(feature = "alloc")]
-            indirect_lists: [NONE; SIZE],
+            indirect_lists: vec![None; SIZE].into_boxed_slice(),
         })
     }
 
