@@ -258,7 +258,13 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
     VirtIOSocket<H, T, L, RX_BUFFER_SIZE>
 {
     /// Create a new VirtIO Vsock driver.
-    pub fn new(mut transport: T) -> Result<Self> {
+    pub fn new(transport: T) -> Result<Self> {
+        let queue_size = u16::try_from(QUEUE_SIZE).map_err(|_| Error::InvalidParam)?;
+        Self::new_with_queue_size(transport, queue_size)
+    }
+
+    /// Create a new VirtIO Vsock driver with the given queue size.
+    pub fn new_with_queue_size(mut transport: T, queue_size: u16) -> Result<Self> {
         assert!(RX_BUFFER_SIZE > size_of::<VirtioVsockHdr>());
 
         let negotiated_features = transport.begin_init(SUPPORTED_FEATURES)?;
@@ -271,7 +277,6 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
         })?;
         debug!("guest cid: {guest_cid:?}");
 
-        let queue_size = u16::try_from(QUEUE_SIZE).map_err(|_| Error::InvalidParam)?;
         let rx = VirtQueue::new(
             &mut transport,
             RX_QUEUE_IDX,
