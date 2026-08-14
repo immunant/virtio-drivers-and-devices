@@ -1166,6 +1166,7 @@ impl AvailRing {
         //   le16 idx          (offset 2)
         //   le16 ring[SIZE]   (offset 4)
         //   le16 used_event   (offset 4 + SIZE * 2)
+        // SAFETY: Safety requirements delegated to the caller
         unsafe {
             Self {
                 flags: base.cast::<AtomicU16>(),
@@ -1217,6 +1218,7 @@ impl UsedRing {
         //   le16 idx                        (offset 2)
         //   virtq_used_elem ring[SIZE]      (offset 4, each elem is 8 bytes)
         //   le16 avail_event                (offset 4 + SIZE * 8)
+        // SAFETY: Safety requirements delegated to the caller
         unsafe {
             Self {
                 flags: base.cast::<AtomicU16>(),
