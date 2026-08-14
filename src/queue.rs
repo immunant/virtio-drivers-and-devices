@@ -43,7 +43,7 @@ pub struct VirtQueue<H: Hal, const SIZE: usize> {
     /// The device may be able to modify this, even though it's not supposed to, so we shouldn't
     /// trust values read back from it. The only field we need to read currently is `idx`, so we
     /// have `avail_idx` below to use instead.
-    avail: NonNull<AvailRing<SIZE>>,
+    avail: AvailRing,
     /// Used ring
     used: NonNull<UsedRing<SIZE>>,
 
@@ -109,7 +109,8 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
 
         let desc =
             nonnull_slice_from_raw_parts(layout.descriptors_vaddr().cast::<Descriptor>(), SIZE);
-        let avail = layout.avail_vaddr().cast();
+        // SAFETY: avail ring memory was allocated in `layout` with the correct size.
+        let avail = unsafe { AvailRing::new(layout.avail_vaddr(), SIZE) };
         let used = layout.used_vaddr().cast();
 
         let mut desc_shadow: [Descriptor; SIZE] = FromZeros::new_zeroed();
@@ -187,9 +188,10 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
         let head = self.add_direct(inputs, outputs);
 
         let avail_slot = self.avail_idx & (SIZE as u16 - 1);
-        // SAFETY: `self.avail` is properly aligned, dereferenceable and initialised.
+        // SAFETY: `self.avail.ring` points to a properly aligned, dereferenceable,
+        // initialised slice of `SIZE` u16 entries.
         unsafe {
-            (*self.avail.as_ptr()).ring[avail_slot as usize] = head;
+            (*self.avail.ring.as_ptr())[avail_slot as usize] = head;
         }
 
         // Write barrier so that device sees changes to descriptor table and available ring before
@@ -198,11 +200,10 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
 
         // increase head of avail ring
         self.avail_idx = self.avail_idx.wrapping_add(1);
-        // SAFETY: `self.avail` is properly aligned, dereferenceable and initialised.
+        // SAFETY: `self.avail.idx` points to a properly aligned, dereferenceable,
+        // initialised `AtomicU16`.
         unsafe {
-            (*self.avail.as_ptr())
-                .idx
-                .store(self.avail_idx, Ordering::Release);
+            (*self.avail.idx.as_ptr()).store(self.avail_idx, Ordering::Release);
         }
 
         Ok(head)
@@ -334,13 +335,9 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
     pub fn set_dev_notify(&mut self, enable: bool) {
         let avail_ring_flags = if enable { 0x0000 } else { 0x0001 };
         if !self.event_idx {
-            // SAFETY: `self.avail` points to a valid, aligned, initialised, dereferenceable, readable
-            // instance of `AvailRing`.
-            unsafe {
-                (*self.avail.as_ptr())
-                    .flags
-                    .store(avail_ring_flags, Ordering::Release)
-            }
+            // SAFETY: `self.avail.flags` points to a properly aligned, dereferenceable,
+            // initialised `AtomicU16`.
+            unsafe { (*self.avail.flags.as_ptr()).store(avail_ring_flags, Ordering::Release) }
         }
     }
 
@@ -541,12 +538,10 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
         self.last_used_idx = self.last_used_idx.wrapping_add(1);
 
         if self.event_idx {
-            // SAFETY: `self.avail` points to a valid, aligned, initialised, dereferenceable,
-            // readable instance of `AvailRing`.
+            // SAFETY: `self.avail.used_event` points to a properly aligned, dereferenceable,
+            // initialised `AtomicU16`.
             unsafe {
-                (*self.avail.as_ptr())
-                    .used_event
-                    .store(self.last_used_idx, Ordering::Release);
+                (*self.avail.used_event.as_ptr()).store(self.last_used_idx, Ordering::Release);
             }
         }
 
@@ -610,7 +605,7 @@ pub struct DeviceVirtQueue<H: DeviceHal, const SIZE: usize> {
     layout: VirtQueueLayout<DeviceDma<H>>,
 
     desc: NonNull<[Descriptor]>,
-    avail: NonNull<AvailRing<SIZE>>,
+    avail: AvailRing,
     used: NonNull<UsedRing<SIZE>>,
 
     queue_idx: u16,
@@ -650,7 +645,8 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
         };
         let desc =
             nonnull_slice_from_raw_parts(layout.descriptors_vaddr().cast::<Descriptor>(), SIZE);
-        let avail = layout.avail_vaddr().cast();
+        // SAFETY: avail ring memory was mapped in `layout` with the correct size.
+        let avail = unsafe { AvailRing::new(layout.avail_vaddr(), SIZE) };
         let used = layout.used_vaddr().cast();
         let desc_mapped = [const { None }; SIZE];
         Ok(DeviceVirtQueue {
@@ -864,26 +860,26 @@ impl<H: DeviceHal, const SIZE: usize> DeviceVirtQueue<H, SIZE> {
     }
 
     fn can_pop(&self) -> bool {
-        // SAFETY: self.avail points to a valid, aligned, initialised, dereferenceable, readable
-        // instance of AvailRing.
-        self.avail_idx != unsafe { (*self.avail.as_ptr()).idx.load(Ordering::Acquire) }
+        // SAFETY: `self.avail.idx` points to a properly aligned, dereferenceable,
+        // initialised `AtomicU16`.
+        self.avail_idx != unsafe { (*self.avail.idx.as_ptr()).load(Ordering::Acquire) }
     }
 
     fn peek_avail(&self) -> Option<u16> {
         if self.can_pop() {
             let avail_slot = self.avail_idx & (SIZE as u16 - 1);
-            // SAFETY: self.avail points to a valid, aligned, initialised, dereferenceable,
-            // readable instance of AvailRing.
-            Some(unsafe { (*self.avail.as_ptr()).ring[avail_slot as usize] })
+            // SAFETY: `self.avail.ring` points to a properly aligned, dereferenceable,
+            // initialised slice of `SIZE` u16 entries.
+            Some(unsafe { (*self.avail.ring.as_ptr())[avail_slot as usize] })
         } else {
             None
         }
     }
 
     fn should_notify(&self) -> bool {
-        // SAFETY: self.avail points to a valid, aligned, initialised, dereferenceable, readable
-        // instance of AvailRing.
-        unsafe { (*self.avail.as_ptr()).flags.load(Ordering::Acquire) & 0x0001 == 0 }
+        // SAFETY: `self.avail.flags` points to a properly aligned, dereferenceable,
+        // initialised `AtomicU16`.
+        unsafe { (*self.avail.flags.as_ptr()).load(Ordering::Acquire) & 0x0001 == 0 }
     }
 }
 
@@ -1172,15 +1168,49 @@ bitflags! {
 /// The driver uses the available ring to offer buffers to the device:
 /// each ring entry refers to the head of a descriptor chain.
 /// It is only written by the driver and read by the device.
-#[repr(C)]
+///
+/// Ref: virtio 2.7.6 The Virtqueue Available Ring
 #[derive(Debug)]
-struct AvailRing<const SIZE: usize> {
-    flags: AtomicU16,
-    /// A driver MUST NOT decrement the idx.
-    idx: AtomicU16,
-    ring: [u16; SIZE],
-    /// Only used if `VIRTIO_F_EVENT_IDX` is negotiated.
-    used_event: AtomicU16,
+struct AvailRing {
+    /// le16 flags
+    flags: NonNull<AtomicU16>,
+    /// le16 idx — A driver MUST NOT decrement the idx.
+    idx: NonNull<AtomicU16>,
+    /// le16 ring[queue_size]
+    ring: NonNull<[u16]>,
+    /// le16 used_event — Only used if `VIRTIO_F_EVENT_IDX` is negotiated.
+    used_event: NonNull<AtomicU16>,
+}
+
+impl AvailRing {
+    /// Creates an `AvailRing` from a base pointer to avail ring memory.
+    ///
+    /// # Safety
+    ///
+    /// `base` must point to valid, properly aligned memory for an avail ring
+    /// with `queue_size` entries, laid out as specified in virtio 2.7.6:
+    /// `le16 flags`, `le16 idx`, `le16 ring[queue_size]`, `le16 used_event`.
+    unsafe fn new(base: NonNull<u8>, queue_size: usize) -> Self {
+        // Layout (virtio spec 2.7.6):
+        //   le16 flags        (offset 0)
+        //   le16 idx          (offset 2)
+        //   le16 ring[SIZE]   (offset 4)
+        //   le16 used_event   (offset 4 + SIZE * 2)
+        unsafe {
+            Self {
+                flags: base.cast::<AtomicU16>(),
+                idx: NonNull::new(base.as_ptr().add(2).cast::<AtomicU16>())
+                    .expect("avail ring idx pointer is null"),
+                ring: nonnull_slice_from_raw_parts(
+                    NonNull::new(base.as_ptr().add(4).cast::<u16>())
+                        .expect("avail ring ring pointer is null"),
+                    queue_size,
+                ),
+                used_event: NonNull::new(base.as_ptr().add(4 + queue_size * 2).cast::<AtomicU16>())
+                    .expect("avail ring used_event pointer is null"),
+            }
+        }
+    }
 }
 
 /// The used ring is where the device returns buffers once it is done with them:
@@ -1257,21 +1287,29 @@ pub(crate) fn fake_read_write_queue<const QUEUE_SIZE: usize>(
 ) -> bool {
     use core::{ops::Deref, slice};
 
-    let available_ring = queue_driver_area as *const AvailRing<QUEUE_SIZE>;
+    // SAFETY: queue_driver_area points to a valid avail ring with QUEUE_SIZE entries shared by
+    // the test VirtQueue.
+    let available_ring = unsafe {
+        AvailRing::new(
+            NonNull::new(queue_driver_area as *mut u8).expect("queue_driver_area is null"),
+            QUEUE_SIZE,
+        )
+    };
     let used_ring = queue_device_area as *mut UsedRing<QUEUE_SIZE>;
 
     // Safe because the various pointers are properly aligned, dereferenceable, initialised, and
     // nothing else accesses them during this block.
     unsafe {
         // Make sure there is actually at least one descriptor available to read from.
-        if (*available_ring).idx.load(Ordering::Acquire) == (*used_ring).idx.load(Ordering::Acquire)
+        if (*available_ring.idx.as_ptr()).load(Ordering::Acquire)
+            == (*used_ring).idx.load(Ordering::Acquire)
         {
             return false;
         }
         // The fake device always uses descriptors in order, like VIRTIO_F_IN_ORDER, so
         // `used_ring.idx` marks the next descriptor we should take from the available ring.
         let next_slot = (*used_ring).idx.load(Ordering::Acquire) & (QUEUE_SIZE as u16 - 1);
-        let head_descriptor_index = (*available_ring).ring[next_slot as usize];
+        let head_descriptor_index = (*available_ring.ring.as_ptr())[next_slot as usize];
         let mut descriptor = &(*descriptors)[head_descriptor_index as usize];
 
         let input_length;
@@ -1467,7 +1505,7 @@ mod tests {
         // Safe because the various parts of the queue are properly aligned, dereferenceable and
         // initialised, and nothing else is accessing them at the same time.
         unsafe {
-            let first_descriptor_index = (*queue.avail.as_ptr()).ring[0];
+            let first_descriptor_index = (*queue.avail.ring.as_ptr())[0];
             assert_eq!(first_descriptor_index, token);
             assert_eq!(
                 (*queue.desc.as_ptr())[first_descriptor_index as usize].len,
@@ -1532,7 +1570,7 @@ mod tests {
         // Safe because the various parts of the queue are properly aligned, dereferenceable and
         // initialised, and nothing else is accessing them at the same time.
         unsafe {
-            let indirect_descriptor_index = (*queue.avail.as_ptr()).ring[0];
+            let indirect_descriptor_index = (*queue.avail.ring.as_ptr())[0];
             assert_eq!(indirect_descriptor_index, token);
             assert_eq!(
                 (*queue.desc.as_ptr())[indirect_descriptor_index as usize].len as usize,
@@ -1579,7 +1617,7 @@ mod tests {
 
         // Check that the avail ring's flag is zero by default.
         assert_eq!(
-            unsafe { (*queue.avail.as_ptr()).flags.load(Ordering::Acquire) },
+            unsafe { (*queue.avail.flags.as_ptr()).load(Ordering::Acquire) },
             0x0
         );
 
@@ -1587,7 +1625,7 @@ mod tests {
 
         // Check that the avail ring's flag is 1 after `disable_dev_notify`.
         assert_eq!(
-            unsafe { (*queue.avail.as_ptr()).flags.load(Ordering::Acquire) },
+            unsafe { (*queue.avail.flags.as_ptr()).load(Ordering::Acquire) },
             0x1
         );
 
@@ -1595,7 +1633,7 @@ mod tests {
 
         // Check that the avail ring's flag is 0 after `enable_dev_notify`.
         assert_eq!(
-            unsafe { (*queue.avail.as_ptr()).flags.load(Ordering::Acquire) },
+            unsafe { (*queue.avail.flags.as_ptr()).load(Ordering::Acquire) },
             0x0
         );
     }
