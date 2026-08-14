@@ -6,7 +6,6 @@ pub mod owning;
 use crate::hal::{BufferDirection, DeviceDma, DeviceHal, Dma, DmaMemory, Hal, PhysAddr};
 use crate::transport::{DeviceTransport, Transport};
 use crate::{align_up, nonnull_slice_from_raw_parts, pages, Error, Result, PAGE_SIZE};
-#[cfg(feature = "alloc")]
 use alloc::boxed::Box;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
@@ -54,7 +53,7 @@ pub struct VirtQueue<H: Hal, const SIZE: usize> {
     /// The head desc index of the free list.
     free_head: u16,
     /// Our trusted copy of `desc` that the device can't access.
-    desc_shadow: [Descriptor; SIZE],
+    desc_shadow: Box<[Descriptor]>,
     /// Our trusted copy of `avail.idx`.
     avail_idx: u16,
     last_used_idx: u16,
@@ -114,7 +113,8 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
         // SAFETY: used ring memory was allocated in `layout` with the correct size.
         let used = unsafe { UsedRing::new(layout.used_vaddr(), SIZE) };
 
-        let mut desc_shadow: [Descriptor; SIZE] = FromZeros::new_zeroed();
+        let mut desc_shadow: Box<[Descriptor]> =
+            <[Descriptor]>::new_box_zeroed_with_elems(SIZE).unwrap();
         // Link descriptors together.
         for i in 0..(size - 1) {
             desc_shadow[i as usize].next = i + 1;
