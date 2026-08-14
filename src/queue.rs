@@ -48,6 +48,8 @@ pub struct VirtQueue<H: Hal, const SIZE: usize> {
 
     /// The index of queue
     queue_idx: u16,
+    /// The size of the queue.
+    size: u16,
     /// The number of descriptors currently in use.
     num_used: u16,
     /// The head desc index of the free list.
@@ -106,15 +108,17 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
             layout.device_area_paddr(),
         );
 
-        let desc =
-            nonnull_slice_from_raw_parts(layout.descriptors_vaddr().cast::<Descriptor>(), SIZE);
+        let desc = nonnull_slice_from_raw_parts(
+            layout.descriptors_vaddr().cast::<Descriptor>(),
+            usize::from(size),
+        );
         // SAFETY: avail ring memory was allocated in `layout` with the correct size.
         let avail = unsafe { AvailRing::new(layout.avail_vaddr(), size) };
         // SAFETY: used ring memory was allocated in `layout` with the correct size.
         let used = unsafe { UsedRing::new(layout.used_vaddr(), size) };
 
         let mut desc_shadow: Box<[Descriptor]> =
-            <[Descriptor]>::new_box_zeroed_with_elems(SIZE).unwrap();
+            <[Descriptor]>::new_box_zeroed_with_elems(usize::from(size)).unwrap();
         // Link descriptors together.
         for i in 0..(size - 1) {
             desc_shadow[i as usize].next = i + 1;
@@ -131,6 +135,7 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
             avail,
             used,
             queue_idx: idx,
+            size,
             num_used: 0,
             free_head: 0,
             desc_shadow,
@@ -140,7 +145,7 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
             #[cfg(feature = "alloc")]
             indirect,
             #[cfg(feature = "alloc")]
-            indirect_lists: vec![None; SIZE].into_boxed_slice(),
+            indirect_lists: vec![None; usize::from(size)].into_boxed_slice(),
         })
     }
 
@@ -166,14 +171,15 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
         // Only consider indirect descriptors if the alloc feature is enabled, as they require
         // allocation.
         #[cfg(feature = "alloc")]
-        if self.num_used as usize + 1 > SIZE
-            || descriptors_needed > SIZE
-            || (!self.indirect && self.num_used as usize + descriptors_needed > SIZE)
+        if self.num_used as usize + 1 > usize::from(self.size)
+            || descriptors_needed > usize::from(self.size)
+            || (!self.indirect
+                && self.num_used as usize + descriptors_needed > usize::from(self.size))
         {
             return Err(Error::QueueFull);
         }
         #[cfg(not(feature = "alloc"))]
-        if self.num_used as usize + descriptors_needed > SIZE {
+        if self.num_used as usize + descriptors_needed > usize::from(self.size) {
             return Err(Error::QueueFull);
         }
 
@@ -186,9 +192,9 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
         #[cfg(not(feature = "alloc"))]
         let head = self.add_direct(inputs, outputs);
 
-        let avail_slot = self.avail_idx & (SIZE as u16 - 1);
+        let avail_slot = self.avail_idx & (self.size - 1);
         // SAFETY: `self.avail.ring` points to a properly aligned, dereferenceable,
-        // initialised slice of `SIZE` u16 entries.
+        // initialised slice of `self.size` u16 entries.
         unsafe {
             (*self.avail.ring.as_ptr())[avail_slot as usize] = head;
         }
@@ -379,9 +385,9 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
     /// `None` if the used ring is empty.
     pub fn peek_used(&self) -> Option<u16> {
         if self.can_pop() {
-            let last_used_slot = self.last_used_idx & (SIZE as u16 - 1);
+            let last_used_slot = self.last_used_idx & (self.size - 1);
             // SAFETY: `self.used.ring` points to a properly aligned, dereferenceable,
-            // initialised slice of `SIZE` `UsedElem` entries.
+            // initialised slice of `self.size` `UsedElem` entries.
             Some(unsafe { (*self.used.ring.as_ptr())[last_used_slot as usize].id as u16 })
         } else {
             None
@@ -392,14 +398,14 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
     pub fn available_desc(&self) -> usize {
         #[cfg(feature = "alloc")]
         if self.indirect {
-            return if usize::from(self.num_used) == SIZE {
+            return if self.num_used == self.size {
                 0
             } else {
-                SIZE
+                usize::from(self.size)
             };
         }
 
-        SIZE - usize::from(self.num_used)
+        usize::from(self.size) - usize::from(self.num_used)
     }
 
     /// Unshares buffers in the list starting at descriptor index `head` and adds them to the free
@@ -515,11 +521,11 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
         }
 
         // Get the index of the start of the descriptor chain for the next element in the used ring.
-        let last_used_slot = self.last_used_idx & (SIZE as u16 - 1);
+        let last_used_slot = self.last_used_idx & (self.size - 1);
         let index;
         let len;
         // SAFETY: `self.used.ring` points to a properly aligned, dereferenceable,
-        // initialised slice of `SIZE` `UsedElem` entries.
+        // initialised slice of `self.size` `UsedElem` entries.
         unsafe {
             index = (*self.used.ring.as_ptr())[last_used_slot as usize].id as u16;
             len = (*self.used.ring.as_ptr())[last_used_slot as usize].len;
