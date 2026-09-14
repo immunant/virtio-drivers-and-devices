@@ -7,25 +7,20 @@
 //!
 //! See [`VsockConnectionManager`] for a usage example.
 
-#[cfg(feature = "alloc")]
 mod connectionmanager;
 mod error;
 mod protocol;
-#[cfg(feature = "alloc")]
 mod vsock;
 
-#[cfg(feature = "alloc")]
 pub use connectionmanager::{
     Connection, VsockConnectionManager, VsockDeviceConnectionManager, VsockManager,
 };
 pub use error::SocketError;
 pub use protocol::{StreamShutdown, VsockAddr, VMADDR_CID_HOST};
-#[cfg(feature = "alloc")]
 pub use vsock::{
     ConnectionInfo, DisconnectReason, VirtIOSocket, VirtIOSocketDevice, VsockEvent, VsockEventType,
 };
 
-#[cfg(feature = "alloc")]
 pub(crate) use vsock::VirtIOSocketManager;
 
 /// The size in bytes of each buffer used in the RX virtqueue. This must be bigger than
