@@ -50,6 +50,9 @@ pub trait Transport: Send + Sync {
     fn max_queue_size(&mut self, queue: u16) -> u32;
 
     /// Notifies the given queue on the device.
+    ///
+    /// This must only be called after initializing the virtqueue with `queue_set`. Otherwise it may
+    /// panic.
     fn notify(&self, queue: u16);
 
     /// Gets the device status.

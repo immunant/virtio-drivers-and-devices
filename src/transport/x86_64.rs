@@ -14,6 +14,7 @@ use super::{
     DeviceStatus, DeviceType, Transport,
 };
 use crate::{hal::PhysAddr, transport::InterruptStatus, Error};
+use alloc::vec::Vec;
 pub use cam::HypCam;
 use hypercalls::HypIoRegion;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
@@ -41,6 +42,8 @@ pub struct HypPciTransport {
     /// The start of the queue notification region within some BAR.
     notify_region: HypIoRegion,
     notify_off_multiplier: u32,
+    /// Each entry contains the virtqueue number followed by the notification offset
+    notification_offsets: Vec<(u16, u16)>,
     /// The ISR status register within some BAR.
     isr_status: HypIoRegion,
     /// The VirtIO device-specific configuration within some BAR.
@@ -147,6 +150,7 @@ impl HypPciTransport {
             common_cfg,
             notify_region,
             notify_off_multiplier,
+            notification_offsets: Vec::new(),
             isr_status,
             config_space,
         })
@@ -184,11 +188,12 @@ impl Transport for HypPciTransport {
     }
 
     fn notify(&self, queue: u16) {
-        configwrite!(self.common_cfg, queue_select, queue);
-        // TODO: Consider caching this somewhere (per queue).
-        let queue_notify_off: u16 = configread!(self.common_cfg, queue_notify_off);
-
-        let offset_bytes = usize::from(queue_notify_off) * self.notify_off_multiplier as usize;
+        let (_vq, queue_notify_off) = self
+            .notification_offsets
+            .iter()
+            .find(|&(vq, _off)| *vq == queue)
+            .expect("queue not set");
+        let offset_bytes = usize::from(*queue_notify_off) * self.notify_off_multiplier as usize;
         self.notify_region.write(offset_bytes, queue);
     }
 
@@ -217,12 +222,19 @@ impl Transport for HypPciTransport {
         driver_area: PhysAddr,
         device_area: PhysAddr,
     ) {
+        for (vq, _notif_off) in &mut self.notification_offsets {
+            if *vq == queue {
+                panic!("virtqueue {queue:?} already set");
+            }
+        }
         configwrite!(self.common_cfg, queue_select, queue);
         configwrite!(self.common_cfg, queue_size, size as u16);
         configwrite!(self.common_cfg, queue_desc, descriptors as u64);
         configwrite!(self.common_cfg, queue_driver, driver_area as u64);
         configwrite!(self.common_cfg, queue_device, device_area as u64);
         configwrite!(self.common_cfg, queue_enable, 1u16);
+        let queue_notify_off: u16 = configread!(self.common_cfg, queue_notify_off);
+        self.notification_offsets.push((queue, queue_notify_off));
     }
 
     fn queue_unset(&mut self, _queue: u16) {
