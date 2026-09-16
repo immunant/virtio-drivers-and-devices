@@ -36,8 +36,10 @@ impl<H: Hal, const SIZE: usize, const BUFFER_SIZE: usize> OwningQueue<H, SIZE, B
     /// Returns whether the driver should notify the device after adding a new buffer to the
     /// virtqueue.
     ///
-    /// This will be false if the device has supressed notifications.
-    pub fn should_notify(&self) -> bool {
+    /// Consumes the additions since the previous check, even if notifications are suppressed.
+    /// The caller must notify the device if this returns true. A saturated addition count
+    /// conservatively requests a notification regardless of suppression.
+    pub fn should_notify(&mut self) -> bool {
         self.queue.should_notify()
     }
 

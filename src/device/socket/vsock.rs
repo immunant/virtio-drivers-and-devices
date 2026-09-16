@@ -290,7 +290,7 @@ impl<H: Hal, T: Transport, L: LockFactory, const RX_BUFFER_SIZE: usize>
             negotiated_features.contains(Feature::RING_EVENT_IDX),
         )?;
 
-        let rx = OwningQueue::new(rx)?;
+        let mut rx = OwningQueue::new(rx)?;
 
         transport.finish_init();
         if rx.should_notify() {
