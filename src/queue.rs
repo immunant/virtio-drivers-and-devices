@@ -55,6 +55,9 @@ pub struct VirtQueue<H: Hal, const SIZE: usize> {
     /// Our trusted copy of `avail.idx`.
     avail_idx: u16,
     last_used_idx: u16,
+    /// The number of descriptor chains added to the available ring since the last notification.
+    /// Used to calculate whether a notification is needed when `VIRTIO_F_EVENT_IDX` is used.
+    num_added_since_notify: u16,
     /// Whether the `VIRTIO_F_EVENT_IDX` feature has been negotiated.
     event_idx: bool,
     indirect: bool,
@@ -130,6 +133,7 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
             desc_shadow,
             avail_idx: 0,
             last_used_idx: 0,
+            num_added_since_notify: 0,
             event_idx,
             indirect,
             indirect_lists: [NONE; SIZE],
@@ -180,6 +184,9 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
 
         // increase head of avail ring
         self.avail_idx = self.avail_idx.wrapping_add(1);
+        if self.event_idx {
+            self.num_added_since_notify = self.num_added_since_notify.saturating_add(1);
+        }
         // SAFETY: `self.avail` is properly aligned, dereferenceable and initialised.
         unsafe {
             (*self.avail.as_ptr())
@@ -329,12 +336,25 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
     /// virtqueue.
     ///
     /// This will be false if the device has supressed notifications.
-    pub fn should_notify(&self) -> bool {
+    pub fn should_notify(&mut self) -> bool {
         if self.event_idx {
             // SAFETY: `self.used` points to a valid, aligned, initialised, dereferenceable, readable
             // instance of `UsedRing`.
             let avail_event = unsafe { (*self.used.as_ptr()).avail_event.load(Ordering::Acquire) };
-            self.avail_idx >= avail_event.wrapping_add(1)
+
+            let new = self.avail_idx;
+            let old = new.wrapping_sub(self.num_added_since_notify);
+
+            // The num_added_since_notify counter hitting the limit is a rare, but theoretically
+            // possible case where we should notify the other side just in case.
+            let need_notify = new.wrapping_sub(avail_event).wrapping_sub(1) < new.wrapping_sub(old) ||
+                self.num_added_since_notify == u16::MAX;
+
+            if need_notify {
+                self.num_added_since_notify = 0;
+            }
+
+            need_notify
         } else {
             // SAFETY: `self.used` points to a valid, aligned, initialised, dereferenceable, readable
             // instance of `UsedRing`.
